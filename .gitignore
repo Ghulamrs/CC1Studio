@@ -1,0 +1,35 @@
+# Machine-specific pointers, written by install.sh / install.ps1.
+#
+# These are the whole reason cc/ and source/ hold text rather than binaries:
+# each machine answers "where is cc1" and "where is the checkout" for itself.
+# Committing one machine's answer would give every other machine a second,
+# silent answer to the same question - which is the failure cc/README.md is
+# about.
+cc/cc1.path
+cc/cc1
+source/source.path
+extension/slot.txt
+
+# Built by package.sh from the sources beside it, in a second.
+*.vsix
+
+# Written by use.sh, copied out of arch/<target>/.
+demo/.vscode/
+
+# Build output from trying the demo files.
+demo/tour
+demo/table
+demo/*.s
+demo/*.asm
+demo/*.o
+demo/*.obj
+demo/*.exe
+tour
+table
+
+.DS_Store
+._*
+
+# VS Code writes workspace settings into the fixture folder while the tests
+# run - a machine's own cc1 path, which is exactly what must not be committed.
+extension/test/fixtures/.vscode/

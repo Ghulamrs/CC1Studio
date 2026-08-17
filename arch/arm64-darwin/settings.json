@@ -1,0 +1,18 @@
+{
+  // arm64-darwin — the Mac. Native here, so cc1 compiles, assembles, links and
+  // runs in one command.
+  "cc1.arch": "host",
+
+  // "host" rather than "arm64-darwin" on purpose. They mean the same thing on
+  // this machine, but "host" passes no -arch at all, which is what makes this
+  // file safe to copy to a workspace that is later opened over Remote-SSH:
+  // it follows the machine instead of overriding it. Name the target
+  // explicitly only when you want to cross-compile.
+
+  "cc1.diagnostics": "save",
+  "cc1.assemblyRefresh": true,
+
+  // One C toolchain. See ../../README.md.
+  "extensions.ignoreRecommendations": true,
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

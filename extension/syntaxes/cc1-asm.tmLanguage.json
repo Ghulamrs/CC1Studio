@@ -1,0 +1,106 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Assembly (cc1)",
+  "scopeName": "source.cc1asm",
+  "comment": "One grammar for all three of cc1's outputs. GAS and MASM disagree about almost everything - comment character, label form, directive spelling - so both sets are matched rather than guessing which file this is. The overlap is harmless: MASM has no .text, GAS has no PROC.",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#labels" },
+    { "include": "#directives" },
+    { "include": "#registers" },
+    { "include": "#numbers" },
+    { "include": "#instructions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "comment": "GAS on x86 and arm64 uses # and //; MASM uses ;",
+          "name": "comment.line.cc1asm",
+          "match": "(#|;|//).*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.cc1asm",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.cc1asm", "match": "\\\\." }]
+        },
+        {
+          "name": "string.quoted.single.cc1asm",
+          "begin": "'",
+          "end": "'"
+        }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        {
+          "comment": "GAS: a name at the start of a line followed by a colon. Local labels .L... included.",
+          "name": "entity.name.function.label.cc1asm",
+          "match": "^\\s*([A-Za-z_.$][A-Za-z0-9_.$@]*)\\s*:"
+        },
+        {
+          "comment": "MASM: name PROC / name ENDP / name LABEL",
+          "match": "^\\s*([A-Za-z_$?][A-Za-z0-9_$?@]*)\\s+(?i:(PROC|ENDP|LABEL|SEGMENT|ENDS|EQU|=))\\b",
+          "captures": {
+            "1": { "name": "entity.name.function.label.cc1asm" },
+            "2": { "name": "keyword.control.directive.cc1asm" }
+          }
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "comment": "GAS directives are dotted words: .text, .globl, .quad, .cfi_*",
+          "name": "keyword.control.directive.cc1asm",
+          "match": "(?<![A-Za-z0-9_$])\\.[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "comment": "MASM unwind directives carry the frame description ml64 turns into .pdata/.xdata",
+          "name": "keyword.control.directive.unwind.cc1asm",
+          "match": "(?i)(?<![A-Za-z0-9_$])\\.(PUSHREG|SETFRAME|ALLOCSTACK|SAVEREG|SAVEXMM128|ENDPROLOG|PUSHFRAME)\\b"
+        },
+        {
+          "comment": "MASM's bare-word directives and data definitions",
+          "name": "keyword.control.directive.cc1asm",
+          "match": "(?i)(?<![A-Za-z0-9_$.])(PUBLIC|EXTERN|EXTRN|INCLUDELIB|END|ALIGN|OPTION|ASSUME|D[BWDQT]|BYTE|WORD|DWORD|QWORD|XMMWORD|OWORD|REAL[48]|PTR|OFFSET|SHORT|FRAME|OWORD)(?![A-Za-z0-9_$])"
+        }
+      ]
+    },
+    "registers": {
+      "patterns": [
+        {
+          "comment": "x86-64: the general registers in all four widths, plus the vector and segment sets",
+          "name": "variable.language.register.x86.cc1asm",
+          "match": "(?i)%?\\b(r[a-d]x|r[sd]i|r[sb]p|r([89]|1[0-5])[dwb]?|e[a-d]x|e[sd]i|e[sb]p|[a-d]x|[a-d][hl]|[sd]il|[sb]pl|[cdefgs]s|[xy]mm([0-9]|1[0-5])|st\\([0-7]\\)|rip|eflags)\\b"
+        },
+        {
+          "comment": "arm64: x0-x30, w0-w30, the vector files, and the named ones",
+          "name": "variable.language.register.arm64.cc1asm",
+          "match": "\\b([xw]([0-9]|[12][0-9]|30)|[bhsdq]([0-9]|[12][0-9]|3[01])|v([0-9]|[12][0-9]|3[01])|sp|lr|fp|xzr|wzr|pc)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.cc1asm", "match": "(?i)\\b(0x[0-9a-f]+|[0-9][0-9a-f]*h)\\b" },
+        { "name": "constant.numeric.cc1asm", "match": "(?<![A-Za-z0-9_$.])#?-?\\b[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?\\b" }
+      ]
+    },
+    "instructions": {
+      "patterns": [
+        {
+          "comment": "Anything left at the head of a statement is the mnemonic. Matching by position rather than by a list means an instruction this grammar has never heard of still colours correctly - which matters, because the backends are still growing.",
+          "name": "keyword.operator.mnemonic.cc1asm",
+          "match": "^\\s*([A-Za-z][A-Za-z0-9_.]*)(?=\\s|$)"
+        }
+      ]
+    }
+  }
+}

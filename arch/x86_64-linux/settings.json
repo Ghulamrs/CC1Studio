@@ -1,0 +1,19 @@
+{
+  // x86_64-linux — the EC2 box. Native there: System V, ELF, LP64, and a real
+  // gcc to assemble and link behind cc1.
+  "cc1.arch": "host",
+
+  // See the note in ../arm64-darwin/settings.json: "host" follows the machine,
+  // which is what a Remote-SSH window wants.
+
+  "cc1.diagnostics": "save",
+  "cc1.assemblyRefresh": true,
+
+  // The box has 419 MB of memory and two cores, and runs httpd, mysqld and
+  // php-fpm beside this. cc1's default -j will use both cores; pinning it to
+  // one keeps a compile from competing with the services for memory.
+  "cc1.jobs": 1,
+
+  "extensions.ignoreRecommendations": true,
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

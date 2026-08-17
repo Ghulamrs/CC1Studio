@@ -1,0 +1,20 @@
+{
+  // x86_64-windows — the LAN machine. Microsoft x64, LLP64, PE.
+  "cc1.arch": "host",
+
+  // MASM is cc1's default here and the only syntax that carries unwind data,
+  // which x64 is not optional about: the platform has no frame-pointer walk to
+  // fall back on, so a function with no unwind entry is a wall RtlUnwindEx
+  // stops at. Set this to "gnu" only to hand the assembly to clang.
+  "cc1.masm": "masm",
+
+  // Left empty, vcvars64.bat is found through vswhere. Name it here if that
+  // fails - it is what puts ml64 and link on PATH and sets LIB.
+  "cc1.vcvars": "",
+
+  "cc1.diagnostics": "save",
+  "cc1.assemblyRefresh": true,
+
+  "extensions.ignoreRecommendations": true,
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

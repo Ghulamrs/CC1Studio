@@ -1,0 +1,309 @@
+{
+  "name": "cc1-studio",
+  "displayName": "CC1 Studio",
+  "description": "An editing and build environment for cc1, the Compiler-C compiler: its diagnostics in the Problems panel, its assembly beside the source, and its three targets one click apart.",
+  "version": "1.0.0",
+  "publisher": "compiler-c",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Other"
+  ],
+  "keywords": [
+    "c",
+    "compiler",
+    "assembly",
+    "cc1",
+    "Compiler-C"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:c",
+    "onLanguage:cc1-asm",
+    "workspaceContains:**/*.c",
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cc1-asm",
+        "aliases": [
+          "Assembly (cc1)",
+          "cc1-asm"
+        ],
+        "extensions": [
+          ".s",
+          ".asm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cc1-asm",
+        "scopeName": "source.cc1asm",
+        "path": "./syntaxes/cc1-asm.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "cc1.checkNow",
+        "title": "Check This File",
+        "category": "cc1"
+      },
+      {
+        "command": "cc1.showAssembly",
+        "title": "Show Assembly Beside",
+        "category": "cc1",
+        "icon": "$(file-binary)"
+      },
+      {
+        "command": "cc1.buildObject",
+        "title": "Compile to Object (-c)",
+        "category": "cc1"
+      },
+      {
+        "command": "cc1.buildExecutable",
+        "title": "Build Executable",
+        "category": "cc1"
+      },
+      {
+        "command": "cc1.run",
+        "title": "Build and Run",
+        "category": "cc1",
+        "icon": "$(play)"
+      },
+      {
+        "command": "cc1.selectArch",
+        "title": "Select Target Architecture",
+        "category": "cc1"
+      },
+      {
+        "command": "cc1.selectMasm",
+        "title": "Select Windows Assembly Syntax",
+        "category": "cc1"
+      },
+      {
+        "command": "cc1.showTiming",
+        "title": "Report Phase Timings",
+        "category": "cc1"
+      },
+      {
+        "command": "cc1.locateCompiler",
+        "title": "Locate the Compiler",
+        "category": "cc1"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "cc1.showAssembly",
+          "when": "resourceLangId == c",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cc1.run",
+          "when": "resourceLangId == c && cc1.targetIsNative",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "cc1.selectMasm",
+          "when": "cc1.targetIsWindows"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "cc1.showAssembly",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a",
+        "when": "editorLangId == c"
+      },
+      {
+        "command": "cc1.run",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorLangId == c"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "cc1",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "assembly",
+              "object",
+              "executable",
+              "run"
+            ],
+            "description": "How far down the pipeline to go: assembly stops at -S, object at -c, executable links, run links and executes."
+          },
+          "arch": {
+            "type": "string",
+            "enum": [
+              "host",
+              "x86_64-linux",
+              "x86_64-windows",
+              "arm64-darwin"
+            ],
+            "description": "Target to generate for. Omitted means whatever cc1.arch is set to."
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "cc1",
+        "owner": "cc1",
+        "source": "cc1",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "configuration": {
+      "title": "CC1 Studio",
+      "properties": {
+        "cc1.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Where `cc1` is. Left empty, the extension looks beside the file, then up through its parent directories, then in each workspace folder, then on `PATH`. `${workspaceFolder}` and `~` are expanded.",
+          "scope": "machine-overridable"
+        },
+        "cc1.arch": {
+          "type": "string",
+          "default": "host",
+          "enum": [
+            "host",
+            "x86_64-linux",
+            "x86_64-windows",
+            "arm64-darwin"
+          ],
+          "enumDescriptions": [
+            "Whatever machine cc1 is running on. No -arch is passed.",
+            "System V, ELF, LP64.",
+            "Microsoft x64, LLP64. MASM by default; see cc1.masm.",
+            "AAPCS64 as Apple writes it, Mach-O."
+          ],
+          "description": "The architecture code is generated for. Only the host target can be assembled and linked here; the other two stop at assembly, which is cc1's rule, not this extension's."
+        },
+        "cc1.masm": {
+          "type": "string",
+          "default": "masm",
+          "enum": [
+            "masm",
+            "gnu"
+          ],
+          "enumDescriptions": [
+            "What ml64 reads. The default, and the only one that carries unwind data.",
+            "What gcc and clang read. No .seh_* directives, so no unwind data."
+          ],
+          "description": "Which assembly syntax to write for x86_64-windows. Ignored for the other two targets."
+        },
+        "cc1.includePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Directories added to the ones <...> searches, one -I each. ${workspaceFolder} and ~ are expanded."
+        },
+        "cc1.defines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Macros to define, one `-D` each. `NAME` means `NAME=1`; write `NAME=value` for anything else."
+        },
+        "cc1.undefines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Macros to remove, one `-U` each. May name one of the target's own."
+        },
+        "cc1.jobs": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "How many files cc1 compiles at once (`-j`). `0` leaves the flag off and lets cc1 choose; `1` is serial."
+        },
+        "cc1.sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Globs naming every translation unit of the program, for the link and run commands \u2014 `[\"src/**/*.c\"]`. Left empty, only the active file is compiled and linked."
+        },
+        "cc1.diagnostics": {
+          "type": "string",
+          "default": "save",
+          "enum": [
+            "save",
+            "type",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Check when the file is saved.",
+            "Check as the file is edited, after a pause.",
+            "Only check when asked, through cc1: Check This File."
+          ],
+          "description": "When cc1 is run to fill the Problems panel."
+        },
+        "cc1.diagnosticsDelay": {
+          "type": "integer",
+          "default": 400,
+          "minimum": 50,
+          "description": "How long editing must pause before a check starts, in milliseconds. Only used when cc1.diagnostics is 'type'."
+        },
+        "cc1.assemblyRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep an open assembly pane in step with its source, on the same trigger as the diagnostics."
+        },
+        "cc1.vcvars": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Windows only. Path to `vcvars64.bat`, which puts `ml64` and `link` on `PATH` and sets `LIB` \u2014 cc1 stops at assembly on Windows, so those two finish the program. Left empty, `vswhere` is asked and the usual Visual Studio locations are tried.",
+          "scope": "machine-overridable"
+        },
+        "cc1.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Further arguments appended to every cc1 command line, for flags this extension does not model."
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "cc1 Studio runs the cc1 compiler over the files in this folder, and can assemble, link and run the programs they describe. That is executing the workspace's code, so it needs a workspace you trust."
+    }
+  }
+}

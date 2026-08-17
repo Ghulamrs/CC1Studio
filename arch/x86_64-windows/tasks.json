@@ -1,0 +1,77 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cc1: assembly (MASM)",
+      "type": "shell",
+      "command": "${config:cc1.path}",
+      "args": [
+        "${file}",
+        "-S",
+        "-o",
+        "${fileDirname}/${fileBasenameNoExtension}.asm"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": {
+            "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        },
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": [
+            {
+              "regexp": "^(.+?):(\\d+):\\s(?!\\d).*$",
+              "file": 1,
+              "line": 2
+            },
+            {
+              "regexp": "^\\s*\\^\\s(.*)$",
+              "message": 1
+            }
+          ]
+        }
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cc1: rebuild the compiler",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/../arch/x86_64-windows/build-cc1.ps1"
+      ],
+      "problemMatcher": [
+        "$msCompile"
+      ],
+      "detail": "Builds cc1 from the checkout named in source/source.path, with MSBuild and cl."
+    }
+  ]
+}

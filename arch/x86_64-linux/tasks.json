@@ -1,0 +1,228 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cc1: build and run",
+      "type": "shell",
+      "command": "${config:cc1.path}",
+      "args": [
+        "${file}",
+        "-o",
+        "${fileDirname}/${fileBasenameNoExtension}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": {
+            "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        },
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": [
+            {
+              "regexp": "^(.+?):(\\d+):\\s(?!\\d).*$",
+              "file": 1,
+              "line": 2
+            },
+            {
+              "regexp": "^\\s*\\^\\s(.*)$",
+              "message": 1
+            }
+          ]
+        }
+      ],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cc1: build",
+      "type": "shell",
+      "command": "${config:cc1.path}",
+      "args": [
+        "${file}",
+        "-o",
+        "${fileDirname}/${fileBasenameNoExtension}"
+      ],
+      "presentation": {
+        "reveal": "silent",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": {
+            "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        },
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": [
+            {
+              "regexp": "^(.+?):(\\d+):\\s(?!\\d).*$",
+              "file": 1,
+              "line": 2
+            },
+            {
+              "regexp": "^\\s*\\^\\s(.*)$",
+              "message": 1
+            }
+          ]
+        }
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cc1: assembly",
+      "type": "shell",
+      "command": "${config:cc1.path}",
+      "args": [
+        "${file}",
+        "-S",
+        "-o",
+        "${fileDirname}/${fileBasenameNoExtension}.s"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": {
+            "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        },
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": [
+            {
+              "regexp": "^(.+?):(\\d+):\\s(?!\\d).*$",
+              "file": 1,
+              "line": 2
+            },
+            {
+              "regexp": "^\\s*\\^\\s(.*)$",
+              "message": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "cc1: object",
+      "type": "shell",
+      "command": "${config:cc1.path}",
+      "args": [
+        "${file}",
+        "-c",
+        "-o",
+        "${fileDirname}/${fileBasenameNoExtension}.o"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": {
+            "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        },
+        {
+          "owner": "cc1",
+          "source": "cc1",
+          "fileLocation": [
+            "autoDetect",
+            "${workspaceFolder}"
+          ],
+          "pattern": [
+            {
+              "regexp": "^(.+?):(\\d+):\\s(?!\\d).*$",
+              "file": 1,
+              "line": 2
+            },
+            {
+              "regexp": "^\\s*\\^\\s(.*)$",
+              "message": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "cc1: rebuild the compiler",
+      "type": "shell",
+      "command": "${workspaceFolder}/../arch/x86_64-linux/build-cc1.sh",
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "detail": "Builds cc1 from the checkout named in source/source.path, with gcc."
+    }
+  ]
+}
