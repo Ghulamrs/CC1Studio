@@ -1,5 +1,9 @@
 # CC1 Studio
 
+[![compiler: Compiler-C](https://img.shields.io/badge/compiler-Compiler--C-0b7285)](https://github.com/Ghulamrs/Compiler-C)
+[![targets: 3](https://img.shields.io/badge/targets-arm64--darwin%20%7C%20x86__64--linux%20%7C%20x86__64--windows-495057)](https://github.com/Ghulamrs/Compiler-C/blob/main/help/command-lines.md)
+[![dependencies: none](https://img.shields.io/badge/dependencies-none-2b8a3e)](#testing)
+
 An editing and build environment for [Compiler-C](https://github.com/Ghulamrs/Compiler-C),
 built as a VS Code extension. VS Code is the front end; `cc1` is the only
 compiler, and the host's assembler and linker finish the job — which is how cc1
