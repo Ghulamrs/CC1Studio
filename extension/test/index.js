@@ -340,13 +340,17 @@ async function run() {
       console.log('       (skipped: this machine is not one of cc1\'s three targets)');
       return;
     }
+    // A Windows cc1 from before Compiler-C 48af909 stops at -S and the
+    // ml64/link route needs an environment this scratch profile has no
+    // business creating. A current one finishes the job itself - so ask the
+    // binary, and run the whole pipeline whenever it says it can.
+    await api.cc1.learnCapabilities(cc1Path);
     if (!api.cc1.cc1CanLink()) {
-      // A Windows host: cc1 stops at -S there, and the ml64/link route needs
-      // vcvars64.bat, which this scratch profile has no business running.
-      console.log('       (skipped: cc1 cannot link on this host; ml64 and link do that)');
+      console.log('       (skipped: this cc1 stops at -S here; ml64 and link finish the job)');
       return;
     }
-    const program = path.join(os.tmpdir(), 'cc1-studio-test-program');
+    const suffix = process.platform === 'win32' ? '.exe' : '';
+    const program = path.join(os.tmpdir(), 'cc1-studio-test-program' + suffix);
     try { fs.unlinkSync(program); } catch (e) { /* fine */ }
     const result = await api.cc1.run(
       cc1Path,
@@ -384,6 +388,52 @@ async function run() {
     fs.rmdirSync(dir);
   });
 
+  await check('what a cc1 can finish is asked of the binary, not the platform', () => {
+    // The stand-ins below are /bin/sh scripts, so this runs where sh does. The
+    // logic under test reads text and is the same everywhere; what Windows
+    // needs proving is the deferral itself, which the build commands do.
+    if (process.platform === 'win32') return 'no /bin/sh to stand a fake cc1 up with';
+    // A Windows cc1 from before Compiler-C 48af909 stops at -S; one after it
+    // calls ml64 and link itself. Both can sit on the same machine, so the
+    // platform cannot answer for them - and the compiler says which it is in
+    // its own usage, where it has to explain the name it gives a program.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc1-finish-'));
+    const usage =
+      'usage: %s <file.c> [more.c ...] [-o out] [-S] [-c] [-I dir]\n' +
+      '       with neither -S nor -c the inputs are compiled, assembled and\n' +
+      '         linked into a program, named by -o%s\n';
+
+    const older = path.join(dir, 'cc1-older');
+    fs.writeFileSync(older, '#!/bin/sh\nprintf \'' +
+      usage.replace('%s', '$0').replace('%s', ' or a.out; several inputs') +
+      '\'\n');
+    fs.chmodSync(older, 0o755);
+
+    const newer = path.join(dir, 'cc1-newer');
+    fs.writeFileSync(newer, '#!/bin/sh\nprintf \'' +
+      usage.replace('%s', '$0').replace('%s', ', or a.out - a.exe on a Windows host') +
+      '\'\n');
+    fs.chmodSync(newer, 0o755);
+
+    // Both are usable compilers as far as -S goes; they differ only in whether
+    // they finish the job, which is the distinction being pinned.
+    assert.strictEqual(api.cc1.isUsable(older), true, 'the older cc1 was rejected outright');
+    assert.strictEqual(api.cc1.isUsable(newer), true, 'the newer cc1 was rejected outright');
+    assert.strictEqual(api.cc1.cc1Finishes(older), false,
+      'a cc1 that stops at -S was read as finishing the job');
+    assert.strictEqual(api.cc1.cc1Finishes(newer), true,
+      'a cc1 that finishes the job was read as stopping at -S');
+
+    // The real one this suite runs against is current, so it says so too.
+    api.cc1.isUsable(cc1Path);
+    assert.strictEqual(api.cc1.cc1Finishes(cc1Path), true,
+      'the cc1 under test does not describe itself as finishing the job');
+
+    fs.unlinkSync(older);
+    fs.unlinkSync(newer);
+    fs.rmdirSync(dir);
+  });
+
   await check('the toolchain slot finds cc1 with nothing configured', async () => {
     // The path setting is what every other check leans on; this is the one
     // that proves an untouched install works, which is how it will actually be
@@ -415,9 +465,13 @@ async function run() {
   await check('the build-and-run task actually runs the program', async () => {
     const doc = await open('good.c');
     const task = api.makeTask({ type: 'cc1', mode: 'run' }, 'build and run', doc);
-    if (!api.cc1.cc1CanLink()) {
-      // On a Windows host a run task cannot be one truthful command line, so
-      // it must refuse to resolve rather than quietly build and not run.
+    if (process.platform === 'win32' || !api.cc1.cc1CanLink()) {
+      // A run task must refuse to resolve rather than quietly build and not
+      // run. On Windows it refuses even when cc1 can finish the job on its
+      // own: a task runs in the user's terminal, and vcvars64.bat has not run
+      // there, so cc1 would call ml64 and not find it. The commands carry that
+      // environment; a task cannot. Asking cc1CanLink here stopped being the
+      // same question the moment a Windows cc1 could link.
       assert.strictEqual(task, undefined, 'an untruthful run task was produced');
       return;
     }

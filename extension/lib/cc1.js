@@ -51,22 +51,57 @@ function targetIsNative() {
 }
 
 // Whether *cc1 itself* can go past -S here, which is a narrower question than
-// whether the target is native, and the two disagree on exactly one platform.
+// whether the target is native.
 //
-// cc1 has no assembler and no linker; it writes assembly and calls the host's
-// cc. On Windows there is no such cc to call, and cc1's driver builds those
-// command lines for a POSIX shell besides - it even puts its temporaries in
-// /tmp, so a Windows cc1 asked for an object fails on the path first:
+// This used to be a fact about the platform: cc1 called the host's cc, Windows
+// has none, and its driver wrote POSIX command lines and put temporaries in a
+// /tmp that does not exist there, so a Windows cc1 asked for an object failed
+// on the path before anything else:
 //
 //     cc1.exe: cannot write /tmp/cc1-4400-0.s
 //
-// So on Windows the answer is always no, whatever the target, and the
-// extension finishes the job through ml64 and link instead. See lib/windows.js.
+// It is now a fact about the *binary*. Compiler-C 48af909 taught the driver to
+// call ml64 and link where a POSIX host calls cc, so a current cc1.exe
+// finishes the job and an older one still stops at -S - and both may be
+// installed on the same machine. Asking the platform would get one of them
+// wrong, so the question goes to whichever compiler actually answered.
+//
+// Unknown means no. A binary that has not yet been asked is treated as one
+// that cannot finish, which routes the build through the extension's own
+// ml64 and link - the path that worked before any of this and still does.
 function cc1CanLink() {
-  return process.platform !== 'win32' && targetIsNative();
+  if (!targetIsNative()) return false;
+  if (process.platform !== 'win32') return true;
+  const exe = resolvedCompiler();
+  return !!(exe && finishes.get(exe));
 }
 
 // Whether a program can be produced here at all, by any route.
+// What the probe concluded about one binary: true, false, or undefined for
+// one that has not been asked.
+function cc1Finishes(exe) {
+  return finishes.get(exe);
+}
+
+// Ask, if this binary has not been asked yet.
+//
+// cc1CanLink has to be synchronous - the status bar and the task provider both
+// call it - so it can only read what is already known, and treats unknown as
+// no. That is the safe default and it would also be a permanent one: a
+// configured cc1.path is used as named without being probed, so nothing would
+// ever fill the answer in and a current Windows cc1 would be driven forever
+// through a path it no longer needs. So the commands ask first, here, where
+// waiting is allowed and the spawn is asynchronous.
+async function learnCapabilities(exe) {
+  if (!exe || finishes.has(exe)) return finishes.get(exe);
+  const r = await run(exe, [], undefined);
+  const usage = String(r.stdout || '') + String(r.stderr || '');
+  const usable = /(^|\s)-S(\s|,)/.test(usage) && /<file\.c>/.test(usage);
+  if (!capable.has(exe)) capable.set(exe, usable);
+  finishes.set(exe, usable && /a\.exe/.test(usage));
+  return finishes.get(exe);
+}
+
 function canReachExecutable() {
   if (process.platform === 'win32') return effectiveTarget() === 'x86_64-windows';
   return targetIsNative();
@@ -151,6 +186,11 @@ function isRunnable(p) {
 // architecture" just as the current one does.
 const capable = new Map();
 
+// Whether that same binary finishes the job past -S on this host. Keyed the
+// same way and filled by the same probe, so the two answers can never come
+// from different compilers.
+const finishes = new Map();
+
 function isUsable(p) {
   if (!isRunnable(p)) return false;
   const key = p;
@@ -169,8 +209,15 @@ function isUsable(p) {
     });
     const usage = String(r.stdout || '') + String(r.stderr || '');
     ok = /(^|\s)-S(\s|,)/.test(usage) && /<file\.c>/.test(usage);
+    // The same text answers the second question. A driver that finishes the
+    // job on Windows says so in its own usage - "a.out - a.exe on a Windows
+    // host" - because it has to explain the name it will give the program.
+    // The compiler describing itself is the cheapest honest source there is,
+    // and it is exactly the text already in hand.
+    finishes.set(key, ok && /a\.exe/.test(usage));
   } catch (e) {
     ok = false;
+    finishes.set(key, false);
   }
   capable.set(key, ok);
   return ok;
@@ -181,6 +228,7 @@ let cached = null;
 function forgetCompiler() {
   cached = null;
   capable.clear();
+  finishes.clear();
 }
 
 // Look for cc1 in the order someone would look for it themselves: where they
@@ -265,12 +313,18 @@ function commonArgs(uri, archOverride) {
 // child rather than leaving it to run to completion behind a spinner that
 // nothing can dismiss. stdin is closed so a tool that reads it fails fast
 // instead of waiting forever on input nobody can type.
-function run(exe, args, cwd, token) {
+// env is for the one case that needs it: a Windows cc1 that calls ml64 and
+// link itself, which finds them only in the environment vcvars64.bat sets.
+// Handing that environment to an ordinary spawn keeps the diagnostics, the
+// cancellation and the exit code that wrapping the call in a batch file would
+// have cost. Everywhere else it is undefined and the child inherits ours.
+function run(exe, args, cwd, token, env) {
   return new Promise((resolve) => {
     let child;
     try {
       child = cp.spawn(exe, args, {
         cwd,
+        env: env || process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
@@ -364,6 +418,8 @@ module.exports = {
   targetIsNative,
   cc1CanLink,
   canReachExecutable,
+  cc1Finishes,
+  learnCapabilities,
   config,
   expand,
   folderFor,

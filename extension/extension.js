@@ -191,11 +191,38 @@ function programPath(doc) {
 // check. The progress lives in a notification with a cancel button, and
 // cancelling kills the compiler rather than abandoning it. Returns true when
 // cc1 succeeded.
-async function build(doc, extraArgs, description) {
+// The environment a build needs, or null if it needs one that is not there.
+//
+// Only work going past -S needs anything: a Windows cc1 that assembles and
+// links for itself calls ml64 and link by bare name, and they reach PATH only
+// after vcvars64.bat. Checking and assembly stop short of that and want
+// nothing. Undefined means "inherit ours", which is every other case.
+async function toolchainEnvFor(needed) {
+  if (!needed) return undefined;
+  if (process.platform !== 'win32') return undefined;
+  if (!cc1.cc1CanLink()) return undefined;
+  const env = await windows.toolchainEnv();
+  return env || null;
+}
+
+async function build(doc, extraArgs, description, needsToolchain) {
   const exe = compilerFor(doc);
   if (!exe) return false;
   const cwd = cwdFor(doc);
   const args = extraArgs.slice();
+
+  const env = await toolchainEnvFor(needsToolchain);
+  if (env === null) {
+    output.appendLine(windows.noVcvars());
+    vscode.window
+      .showErrorMessage(
+        'cc1 assembles and links through ml64 and link, and vcvars64.bat was ' +
+          'not found, so neither can be reached.',
+        'Details'
+      )
+      .then((pick) => { if (pick === 'Details') output.show(true); });
+    return false;
+  }
   output.appendLine('$ ' + exe + ' ' + args.join(' '));
 
   const result = await vscode.window.withProgress(
@@ -204,7 +231,7 @@ async function build(doc, extraArgs, description) {
       title: 'cc1: ' + description,
       cancellable: true,
     },
-    (progress, token) => cc1.run(exe, args, cwd, token)
+    (progress, token) => cc1.run(exe, args, cwd, token, env || undefined)
   );
   if (result.cancelled) {
     output.appendLine('cc1: cancelled');
@@ -262,12 +289,14 @@ async function reportToolchain(result, what) {
   return false;
 }
 
-// ml64 reads MASM and nothing else. The extension's Windows route feeds it
-// what cc1 wrote, so cc1 must have written the MASM spelling - a build that
-// went ahead with cc1.masm set to 'gnu' would hand ml64 assembly it cannot
-// parse and report the wreck as an assembler failure.
+// ml64 reads MASM and nothing else. That holds whoever calls it - the
+// extension over cc1's assembly, or a current cc1 calling it for itself - so
+// the question is whether this host assembles with ml64 at all, not who drives
+// it. Asking cc1CanLink here was right only while a Windows cc1 always stopped
+// at -S; once one could finish the job, that test began answering "no need to
+// check" for exactly the builds that need checking.
 function requireMasmSyntax() {
-  if (cc1.cc1CanLink()) return true;
+  if (process.platform !== 'win32') return true;
   if (cc1.config().get('masm', 'masm') !== 'gnu') return true;
   vscode.window
     .showErrorMessage(
@@ -285,6 +314,7 @@ async function commandBuildObject() {
   const doc = subjectC();
   if (!doc) return;
   if (!(await requireNative())) return;
+  await cc1.learnCapabilities(compilerFor(doc));
   if (!requireMasmSyntax()) return;
   if (doc.isDirty) await doc.save();
   const stem = path.basename(doc.uri.fsPath, path.extname(doc.uri.fsPath));
@@ -306,9 +336,11 @@ async function commandBuildObject() {
     return;
   }
 
-  const obj = path.join(dir, stem + '.o');
+  // .obj on a Windows host, .o elsewhere: the same command producing one or
+  // the other depending on which cc1 answered would be its own small puzzle.
+  const obj = path.join(dir, stem + (process.platform === 'win32' ? '.obj' : '.o'));
   const args = [doc.uri.fsPath].concat(cc1.commonArgs(doc.uri), ['-c', '-o', obj]);
-  if (await build(doc, args, 'compiling to an object')) {
+  if (await build(doc, args, 'compiling to an object', true)) {
     vscode.window.showInformationMessage('cc1 wrote ' + path.basename(obj));
   }
 }
@@ -317,6 +349,7 @@ async function commandBuildExecutable() {
   const doc = subjectC();
   if (!doc) return null;
   if (!(await requireNative())) return null;
+  await cc1.learnCapabilities(compilerFor(doc));
   if (!requireMasmSyntax()) return null;
   const sources = await sourcesFor(doc);
   await saveSources(sources.concat([doc.uri.fsPath]));
@@ -346,7 +379,7 @@ async function commandBuildExecutable() {
   }
 
   const args = sources.concat(cc1.commonArgs(doc.uri), ['-o', program]);
-  if (await build(doc, args, 'building ' + path.basename(program))) return program;
+  if (await build(doc, args, 'building ' + path.basename(program), true)) return program;
   return null;
 }
 
@@ -467,6 +500,8 @@ function updateStatus() {
   let reach;
   if (!cc1.canReachExecutable()) {
     reach = 'Cross - reaches assembly only on this machine.';
+  } else if (cc1.cc1CanLink() && process.platform === 'win32') {
+    reach = 'Native here - cc1 drives ml64 and link itself.';
   } else if (cc1.cc1CanLink()) {
     reach = 'Native here - cc1 compiles, assembles, links and runs.';
   } else {
@@ -493,11 +528,14 @@ const taskProvider = {
   provideTasks() {
     const doc = subjectC();
     if (!doc) return [];
-    // A task is a single cc1 command line, so on Windows only the assembly one
-    // is truthful - the others need ml64 and link after it, which is two more
-    // programs and an environment to carry between them. Those live behind the
-    // commands instead, where a task cannot misrepresent them as one step.
-    const modes = cc1.cc1CanLink()
+    // On Windows only the assembly task is offered, and the reason survived a
+    // current cc1 learning to assemble and link for itself. A task runs in the
+    // user's own terminal, and that terminal has not had vcvars64.bat run in
+    // it - so cc1 would call ml64 by name and not find it. The commands hand
+    // the compiler that environment; a ShellExecution cannot, short of writing
+    // a batch file the user did not ask for. Assembly needs no toolchain and
+    // is safe to offer anywhere.
+    const modes = tasksCanGoPastAssembly()
       ? [['assembly', 'assembly'], ['object', 'object'],
          ['executable', 'executable'], ['run', 'build and run']]
       : [['assembly', 'assembly']];
@@ -516,6 +554,13 @@ function shellWord(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
+// Whether a task may do more than write assembly. Not the same question as
+// whether cc1 can: a Windows cc1 that finishes the job still needs ml64 on
+// PATH, and a task's terminal has no vcvars environment to give it.
+function tasksCanGoPastAssembly() {
+  return process.platform !== 'win32' && cc1.cc1CanLink();
+}
+
 function makeTask(definition, title, doc) {
   // A tasks.json may name its own target; the settings answer otherwise.
   const arch = definition.arch || null;
@@ -525,8 +570,7 @@ function makeTask(definition, title, doc) {
   const stem = path.basename(doc.uri.fsPath, path.extname(doc.uri.fsPath));
   const dir = path.dirname(doc.uri.fsPath);
 
-  // On a Windows host only the assembly task is a single truthful command.
-  if (!cc1.cc1CanLink() && definition.mode !== 'assembly') return undefined;
+  if (!tasksCanGoPastAssembly() && definition.mode !== 'assembly') return undefined;
 
   let execution;
   if (definition.mode === 'assembly') {
@@ -541,7 +585,7 @@ function makeTask(definition, title, doc) {
     if (definition.mode === 'run') {
       // Build and then actually run - the task called "build and run" used
       // to produce the same command as "executable" and never ran anything.
-      // This branch is POSIX-only (see the cc1CanLink gate above), so the
+      // This branch is POSIX-only (see tasksCanGoPastAssembly above), so the
       // quoting can be too.
       const line = [exe].concat(args).map(shellWord).join(' ') + ' && ' + shellWord(program);
       execution = new vscode.ShellExecution(line, { cwd: cwdFor(doc) });

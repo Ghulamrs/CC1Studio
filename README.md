@@ -170,24 +170,41 @@ compile, assemble, link and run in one command, while any other target stops at
 assembly and says so. The extension reports that rule up front rather than
 letting you press Run and read a failure.
 
-**Windows is the exception, and it is not a target question but a host one.**
-A cc1 running on Windows stops at `-S` *whatever* it is targeting, because its
-driver builds the assemble and link command lines for a POSIX shell and puts
-its temporaries in `/tmp`. Asked for an object there, it fails on the path
+**Windows is the exception, and it is a question about the binary.** It used to
+be one about the platform: a cc1 on Windows stopped at `-S` whatever it was
+targeting, because its driver wrote POSIX command lines and put temporaries in
+a `/tmp` that does not exist there. Asked for an object, it failed on the path
 before anything else:
 
 ```
 cc1.exe: cannot write /tmp/cc1-4400-0.s
 ```
 
-So on Windows the extension finishes the job itself with the tools the platform
-ships: `ml64` assembles the MASM cc1 writes, and `link` produces the executable
-— the same sequence `help/command-lines.md` sets out by hand, including the
-five libraries `link` needs when driven directly. `vcvars64.bat` is found
-through `vswhere`, or named with `cc1.vcvars`.
+Compiler-C `48af909` fixed that: a current cc1 calls `ml64` and `link` where a
+POSIX host calls `cc`. Both kinds of `cc1.exe` can sit on one machine, so the
+extension asks rather than assumes — and the compiler answers in its own usage,
+which has to explain the name it gives a program (`a.out - a.exe on a Windows
+host`). A binary that has not been asked counts as one that stops at `-S`.
 
-The status bar says which of the three situations you are in, because "native"
-would be true and useless on Windows.
+- **A cc1 that finishes the job** is handed the build and left to it. What it
+  still cannot do is find `ml64`, which it calls by bare name, so the extension
+  captures the `vcvars64.bat` environment once and hands that to the compiler.
+  Capturing the environment rather than wrapping the call in a batch file is
+  what keeps the diagnostics, the cancellation and the exit code.
+- **A cc1 that stops at `-S`** is finished the way it always was: `ml64` over
+  the MASM, then `link`, with the five libraries `link` needs when driven
+  directly. That path is unchanged and still tested.
+
+`vcvars64.bat` is found through `vswhere`, or named with `cc1.vcvars`.
+
+**Tasks stay at assembly on Windows either way**, and deferring did not change
+it. A task runs in your own terminal, which has never had `vcvars64.bat` run in
+it, so cc1 would call `ml64` there and not find it. The commands can carry that
+environment; a `ShellExecution` cannot, short of writing a batch file you did
+not ask for.
+
+The status bar says which of the situations you are in, because "native" would
+be true and useless on Windows.
 
 **cc1 stops at the first error.** There is at most one diagnostic per file per
 run, which is why each check clears what *its own* source reported last time

@@ -19,6 +19,7 @@
 // environment from one command into the next.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vscode = require('vscode');
 const cc1 = require('./cc1');
@@ -42,6 +43,61 @@ let cachedVcvars;
 
 function forgetVcvars() {
   cachedVcvars = undefined;
+  cachedEnv = undefined;
+}
+
+// The environment ml64 and link live in, taken once and kept.
+//
+// A cc1 new enough to assemble and link for itself still calls those two by
+// bare name, so vcvars64.bat must have run - the same requirement that made
+// this file necessary when the extension did that work itself. Deferring the
+// work to cc1 does not retire the problem; it moves it to one place.
+//
+// The environment is captured rather than the command wrapped. A batch file
+// around every cc1 call would work and would cost the things that make the
+// call worth making: the exit code, the cancellation, and cc1's diagnostics
+// arriving on the stream the parser reads.
+let cachedEnv;
+
+async function toolchainEnv() {
+  if (cachedEnv !== undefined) return cachedEnv;
+  const vcvars = await findVcvars();
+  if (!vcvars) {
+    cachedEnv = null;
+    return cachedEnv;
+  }
+  const file = path.join(os.tmpdir(),
+                         'cc1-studio-env-' + process.pid + '.bat');
+  const body = [
+    '@echo off',
+    'chcp 65001 >nul',
+    'call ' + quote(vcvars) + ' >nul',
+    'if errorlevel 1 exit /b 1',
+    'set',
+    '',
+  ].join('\r\n');
+  let out;
+  try {
+    fs.writeFileSync(file, body, 'utf8');
+    out = await cc1.run('cmd.exe', ['/c', file], undefined);
+  } catch (e) {
+    cachedEnv = null;
+    return cachedEnv;
+  } finally {
+    try { fs.unlinkSync(file); } catch (e) { /* nothing to remove */ }
+  }
+  if (!out || out.code !== 0) {
+    cachedEnv = null;
+    return cachedEnv;
+  }
+  const env = {};
+  for (const line of String(out.stdout).split(/\r?\n/)) {
+    const eq = line.indexOf('=');
+    if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  // A `set` that produced no PATH did not run vcvars, whatever it exited with.
+  cachedEnv = (env.PATH || env.Path) ? env : null;
+  return cachedEnv;
 }
 
 async function findVcvars() {
@@ -137,4 +193,12 @@ function noVcvars() {
     'Set cc1.vcvars to its path, or install the Visual Studio C++ build tools.';
 }
 
-module.exports = { assemble, assembleAndLink, findVcvars, forgetVcvars, LIBRARIES };
+module.exports = {
+  assemble,
+  assembleAndLink,
+  findVcvars,
+  forgetVcvars,
+  toolchainEnv,
+  noVcvars,
+  LIBRARIES,
+};
