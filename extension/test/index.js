@@ -349,13 +349,28 @@ async function run() {
       console.log('       (skipped: this cc1 stops at -S here; ml64 and link finish the job)');
       return;
     }
+    // Linking on Windows needs the vcvars environment even when cc1 does the
+    // linking itself: it calls ml64 and link by bare name, and they reach PATH
+    // only after vcvars64.bat. The extension captures that environment and
+    // hands it to the spawn - so this asks for it the same way, rather than
+    // spawning cc1 bare and testing whatever the shell that started the editor
+    // happened to have. Spawning it bare passed only while cc1 stopped at -S
+    // and this check skipped itself.
+    const env = process.platform === 'win32'
+      ? await api.windows.toolchainEnv()
+      : undefined;
+    if (process.platform === 'win32') {
+      assert.ok(env, 'vcvars64.bat was not found, so ml64 and link cannot be reached');
+    }
     const suffix = process.platform === 'win32' ? '.exe' : '';
     const program = path.join(os.tmpdir(), 'cc1-studio-test-program' + suffix);
     try { fs.unlinkSync(program); } catch (e) { /* fine */ }
     const result = await api.cc1.run(
       cc1Path,
       [path.join(fixtures, 'good.c'), '-o', program],
-      fixtures
+      fixtures,
+      undefined,
+      env || undefined
     );
     assert.strictEqual(result.code, 0, 'cc1 failed to link: ' + result.stderr);
     assert.ok(fs.existsSync(program), 'no program was written');
