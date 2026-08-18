@@ -104,9 +104,6 @@ if ($sourceDir) {
 # between machines, and a baked-in path would be a second silent answer to
 # "which cc1". So the installer writes cc1.path, which survives reinstalling
 # the extension and is visible in the Settings UI.
-$userSettings = "$env:APPDATA\Code\User\settings.json"
-New-Item -ItemType Directory -Force -Path (Split-Path $userSettings) | Out-Null
-
 # A settings file this cannot parse is a settings file this must not rewrite:
 # the parse only recovers what it understood, so writing that back silently
 # drops everything else. The old version did exactly that - and on Windows
@@ -114,31 +111,46 @@ New-Item -ItemType Directory -Force -Path (Split-Path $userSettings) | Out-Null
 # -AsHashtable there and the resulting error was caught and turned into an
 # empty object. This uses only what 5.1 has, and walks away rather than
 # guessing.
-$conf = $null
-$rawText = ""
-if (Test-Path $userSettings) {
-    $rawText = Get-Content $userSettings -Raw
-    if ($rawText -and $rawText.Trim()) {
-        # settings.json is JSONC; drop whole-line comments and try.
-        $stripped = ($rawText -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
-        foreach ($candidate in @($rawText, $stripped)) {
-            try { $conf = $candidate | ConvertFrom-Json; break } catch { $conf = $null }
+function Write-Cc1Path($file, $value, $encoding) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+    $conf = $null
+    if (Test-Path $file) {
+        $rawText = Get-Content $file -Raw
+        if ($rawText -and $rawText.Trim()) {
+            # settings.json is JSONC; drop whole-line comments and try.
+            $stripped = ($rawText -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+            foreach ($candidate in @($rawText, $stripped)) {
+                try { $conf = $candidate | ConvertFrom-Json; break } catch { $conf = $null }
+            }
+        } else {
+            $conf = New-Object PSObject
         }
     } else {
         $conf = New-Object PSObject
     }
-} else {
-    $conf = New-Object PSObject
+
+    if ($null -eq $conf) {
+        Write-Warning "Could not parse $file safely - leaving it alone."
+        Write-Warning "Add this line to it yourself:  `"cc1.path`": `"$($value -replace '\\', '\\\\')`""
+        return
+    }
+    $conf | Add-Member -NotePropertyName "cc1.path" -NotePropertyValue $value -Force
+    [System.IO.File]::WriteAllText($file, ($conf | ConvertTo-Json -Depth 10), $encoding)
+    Write-Host "  cc1.path -> $value"
+    Write-Host "  written to $file"
 }
 
-if ($null -eq $conf) {
-    Write-Warning "Could not parse $userSettings safely - leaving it alone."
-    Write-Warning "Add this line to it yourself:  `"cc1.path`": `"$($Cc1 -replace '\\', '\\')`""
-} else {
-    $conf | Add-Member -NotePropertyName "cc1.path" -NotePropertyValue $Cc1 -Force
-    [System.IO.File]::WriteAllText($userSettings, ($conf | ConvertTo-Json -Depth 10), $noBom)
-    Write-Host "  cc1.path -> $Cc1"
-    Write-Host "  written to $userSettings"
+Write-Cc1Path "$env:APPDATA\Code\User\settings.json" $Cc1 $noBom
+
+# A Remote-SSH window reads none of the above. It runs against the server in
+# ~\.vscode-server, which has its own extension directory and its own settings
+# file - and on this machine that is the only way the editor is ever seen,
+# because nobody is logged in at the console to open a local window. Writing
+# only the desktop settings left a remote window with the extension asking for
+# a cc1.path nothing had set.
+$machineSettings = "$env:USERPROFILE\.vscode-server\data\Machine\settings.json"
+if (Test-Path (Split-Path (Split-Path $machineSettings))) {
+    Write-Cc1Path $machineSettings $Cc1 $noBom
 }
 
 # Through the editor, from the package - never by copying the folder in.
@@ -147,36 +159,67 @@ if ($null -eq $conf) {
 # `code --list-extensions` prints it, its entry appears in extensions.json, and
 # it never loads. Only an installed .vsix runs. This script used to copy, and
 # that is exactly the install that did nothing.
+#
+# There are two editors on this machine, not one. The desktop `code` installs
+# into ~\.vscode\extensions, which is what a local window reads; a Remote-SSH
+# window reads ~\.vscode-server\extensions and is served by its own CLI. Both
+# get the package, because which one is in use is not this script's business -
+# and on a box with nobody at the console, the remote one is the only one that
+# matters.
+$installers = @()
+
 $code = (Get-Command code -ErrorAction SilentlyContinue).Source
 if (-not $code) {
     $guess = "$env:USERPROFILE\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd"
     if (Test-Path $guess) { $code = $guess }
 }
+if ($code) { $installers += @{ Name = "desktop"; Exe = $code } }
 
-$vsix = Join-Path $studio "cc1-studio-1.0.0.vsix"
-if (-not (Test-Path $vsix)) {
-    Write-Warning "$vsix is missing. Build it on a machine with 'zip' (./package.sh) and copy it here - it is 27 KB of text."
-    exit 0
-}
-
-if (-not $code) {
-    Write-Host ""
-    Write-Warning "The slot is set, but VS Code's 'code' command was not found, so the extension was not installed. Once VS Code is installed, run: code --install-extension `"$vsix`""
-    exit 0
-}
-
-# A previous hand-copied install leaves a directory the editor refuses to
-# install over, complaining it must be restarted first. Clearing the stale
-# entry is what makes this repeatable.
-foreach ($dir in @("$env:USERPROFILE\.vscode\extensions", "$env:USERPROFILE\.vscode-server\extensions")) {
-    if (-not (Test-Path $dir)) { continue }
-    foreach ($stale in @("compiler-c.cc1-studio-1.0.0", ".obsolete", "extensions.json")) {
-        $p = Join-Path $dir $stale
-        if (Test-Path $p) { Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue }
+# Server layouts: the one Remote-SSH uses now, and the legacy one. Newest first,
+# because a machine keeps the servers of every version it has connected with.
+$serverGlobs = @(
+    "$env:USERPROFILE\.vscode-server\cli\servers\Stable-*\server\bin\code-server.cmd",
+    "$env:USERPROFILE\.vscode-server\bin\*\bin\code-server.cmd"
+)
+foreach ($glob in $serverGlobs) {
+    $found = Get-ChildItem $glob -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending |
+             Select-Object -First 1
+    if ($found) {
+        $installers += @{ Name = "remote (server)"; Exe = $found.FullName }
+        break
     }
 }
 
-& $code --install-extension $vsix
+$vsix = Join-Path $studio "cc1-studio-1.0.0.vsix"
+if (-not (Test-Path $vsix)) {
+    Write-Warning "$vsix is missing. Build it on a machine with 'zip' (./package.sh) and copy it here - it is 36 KB of text."
+    exit 0
+}
+
+if ($installers.Count -eq 0) {
+    Write-Host ""
+    Write-Warning "The slot is set, but no VS Code CLI was found, so the extension was not installed. Once VS Code is installed, run: code --install-extension `"$vsix`""
+    exit 0
+}
+
+foreach ($installer in $installers) {
+    Write-Host ""
+    Write-Host "installing into the $($installer.Name) editor"
+    # A previous hand-copied install leaves a directory the editor refuses to
+    # install over, complaining it must be restarted first. Only this
+    # extension's own folder is cleared, and never extensions.json: that file
+    # is the registry for *every* extension on that side, and deleting it from
+    # ~\.vscode-server\extensions is what emptied this box's remote install
+    # while the desktop one was being replaced.
+    foreach ($dir in @("$env:USERPROFILE\.vscode\extensions", "$env:USERPROFILE\.vscode-server\extensions")) {
+        $stale = Join-Path $dir "compiler-c.cc1-studio-1.0.0"
+        if ((Test-Path $stale) -and -not (Test-Path (Join-Path $stale ".vsixmanifest"))) {
+            Remove-Item -Recurse -Force $stale -ErrorAction SilentlyContinue
+        }
+    }
+    & $installer.Exe --install-extension $vsix --force
+}
 
 Write-Host ""
 Write-Host "Done. Open a .c file and TRUST the folder when VS Code asks - an untrusted"
