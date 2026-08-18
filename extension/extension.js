@@ -21,7 +21,6 @@ let output;
 let diagnostics;
 let status;
 let assembly;
-let pending; // debounce handle for the as-you-type check
 
 function isC(doc) {
   return doc && doc.languageId === 'c' && doc.uri.scheme === 'file';
@@ -31,6 +30,26 @@ function activeC() {
   const ed = vscode.window.activeTextEditor;
   if (ed && isC(ed.document)) return ed.document;
   return null;
+}
+
+// The C file a command should act on. The active editor when it is one, else
+// a visible one, else an open one - so the build keystroke still works when
+// focus sits in the terminal, the Problems panel, or the assembly pane.
+function subjectC() {
+  const active = activeC();
+  if (active) return active;
+  const visible = vscode.window.visibleTextEditors.find((ed) => isC(ed.document));
+  if (visible) return visible.document;
+  return vscode.workspace.textDocuments.find(isC) || null;
+}
+
+// Settings written from a command go to the workspace when there is one, and
+// to the user otherwise - updating workspace configuration in a window with
+// no folder open throws rather than falling back.
+function configTarget() {
+  return vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
+    ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
 }
 
 // cc1's own refusal, reported before the command line is built rather than
@@ -46,7 +65,7 @@ async function requireNative() {
   );
   if (pick === 'Show Assembly Beside') vscode.commands.executeCommand('cc1.showAssembly');
   if (pick === 'Switch to Host') {
-    await cc1.config().update('arch', 'host', vscode.ConfigurationTarget.Workspace);
+    await cc1.config().update('arch', 'host', configTarget());
   }
   return false;
 }
@@ -69,11 +88,49 @@ function cwdFor(doc) {
 
 // ---------------------------------------------------------------- diagnostics
 
+// Checks and builds are serialized through one chain, so two saves in quick
+// succession (Save All fires one per file) cannot interleave their updates -
+// the unserialized version lost one file's squiggle to the other's clear.
+let chain = Promise.resolve();
+
+function enqueue(fn) {
+  const job = chain.then(fn);
+  chain = job.then(() => undefined, () => undefined);
+  return job;
+}
+
+// What each source's last run reported on, by uri string. cc1 stops at the
+// first error, so a re-check of a source must clear whatever that source
+// blamed last time - a fixed error in a header has to vanish - but it must
+// not clear what a *different* source reported, or checking one file wipes
+// another's squiggles.
+const reportedBy = new Map();
+
+// Turn one cc1 run's stderr into Problems panel entries, replacing exactly
+// what an earlier run of the same source put there. Returns the parse so the
+// caller can also speak about it.
+async function publish(sourceKey, said, cwd) {
+  const { entries, notices } = diag.parse(said);
+  const groups = await diag.toDiagnostics(entries, cwd);
+  const now = new Set(groups.map((g) => g.uri.toString()));
+  const before = reportedBy.get(sourceKey);
+  if (before) {
+    for (const key of before) {
+      if (!now.has(key)) diagnostics.delete(vscode.Uri.parse(key));
+    }
+  }
+  for (const group of groups) diagnostics.set(group.uri, group.list);
+  reportedBy.set(sourceKey, now);
+  return { entries, notices };
+}
+
 // A check compiles to a scratch file and throws the assembly away; the only
-// thing wanted is what cc1 said on the way. Because cc1 stops at the first
-// error, this clears every file it previously reported on before setting the
-// new result - otherwise a fixed error in a header would stay on screen.
-async function check(doc) {
+// thing wanted is what cc1 said on the way.
+function check(doc) {
+  return enqueue(() => checkNow(doc));
+}
+
+async function checkNow(doc) {
   if (!isC(doc)) return;
   const exe = cc1.findCompiler(doc.uri);
   if (!exe) return;
@@ -84,13 +141,7 @@ async function check(doc) {
   const result = await cc1.run(exe, args, cwd);
   cc1.discard(out);
 
-  const said = result.stderr + result.stdout;
-  const { entries, notices } = diag.parse(said);
-
-  diagnostics.clear();
-  for (const group of await diag.toDiagnostics(entries, cwd)) {
-    diagnostics.set(group.uri, group.list);
-  }
+  const { entries, notices } = await publish(doc.uri.fsPath, result.stderr + result.stdout, cwd);
 
   // Anything cc1 said that carried no position is about the command line, not
   // the code. It has no gutter to live in, so it goes to the output channel.
@@ -98,20 +149,7 @@ async function check(doc) {
     output.appendLine('$ ' + exe + ' ' + args.join(' '));
     for (const n of notices) output.appendLine(n);
   }
-}
-
-function scheduleCheck(doc) {
-  const when = cc1.config().get('diagnostics', 'save');
-  if (when !== 'type') return;
-  if (pending) clearTimeout(pending);
-  pending = setTimeout(() => {
-    pending = null;
-    // The file on disk is what cc1 reads, so an unsaved buffer is checked
-    // against its last saved state. Saying so beats silently checking stale
-    // text; the honest fix is to save, which 'save' mode already waits for.
-    check(doc);
-    if (cc1.config().get('assemblyRefresh', true)) assembly.refreshFor(doc.uri.fsPath);
-  }, cc1.config().get('diagnosticsDelay', 400));
+  updateStatus();
 }
 
 // -------------------------------------------------------------------- builds
@@ -119,7 +157,7 @@ function scheduleCheck(doc) {
 // Every translation unit of the program, for the commands that link. Left
 // unset, a program is just the file in front of you.
 async function sourcesFor(doc) {
-  const globs = cc1.config().get('sources', []);
+  const globs = cc1.config(doc.uri).get('sources', []);
   if (!globs.length) return [doc.uri.fsPath];
   const folder = cc1.folderFor(doc.uri);
   if (!folder) return [doc.uri.fsPath];
@@ -132,6 +170,16 @@ async function sourcesFor(doc) {
   return Array.from(found).sort();
 }
 
+// cc1 reads disk, so every translation unit going into the program is saved
+// first - not just the active file. Without this a multi-file build quietly
+// compiles the stale on-disk copy of any other file being edited.
+async function saveSources(sources) {
+  const wanted = new Set(sources);
+  for (const open of vscode.workspace.textDocuments) {
+    if (open.isDirty && wanted.has(open.uri.fsPath)) await open.save();
+  }
+}
+
 function programPath(doc) {
   const dir = path.dirname(doc.uri.fsPath);
   const base = path.basename(doc.uri.fsPath, path.extname(doc.uri.fsPath));
@@ -140,7 +188,9 @@ function programPath(doc) {
 
 // Run cc1 for a command the user asked for, reporting through the same
 // Problems panel a check uses so a failed build reads the same as a failed
-// check. Returns true when cc1 succeeded.
+// check. The progress lives in a notification with a cancel button, and
+// cancelling kills the compiler rather than abandoning it. Returns true when
+// cc1 succeeded.
 async function build(doc, extraArgs, description) {
   const exe = compilerFor(doc);
   if (!exe) return false;
@@ -149,18 +199,22 @@ async function build(doc, extraArgs, description) {
   output.appendLine('$ ' + exe + ' ' + args.join(' '));
 
   const result = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Window, title: 'cc1: ' + description },
-    () => cc1.run(exe, args, cwd)
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'cc1: ' + description,
+      cancellable: true,
+    },
+    (progress, token) => cc1.run(exe, args, cwd, token)
   );
+  if (result.cancelled) {
+    output.appendLine('cc1: cancelled');
+    return false;
+  }
 
   const said = result.stderr + result.stdout;
   if (said.trim()) output.appendLine(said.trimEnd());
 
-  const { entries, notices } = diag.parse(said);
-  diagnostics.clear();
-  for (const group of await diag.toDiagnostics(entries, cwd)) {
-    diagnostics.set(group.uri, group.list);
-  }
+  const { entries, notices } = await enqueue(() => publish(doc.uri.fsPath, said, cwd));
 
   if (result.code !== 0) {
     if (entries.length) {
@@ -179,7 +233,7 @@ async function build(doc, extraArgs, description) {
 // ------------------------------------------------------------------ commands
 
 async function commandShowAssembly() {
-  const doc = activeC();
+  const doc = subjectC();
   if (!doc) {
     vscode.window.showInformationMessage('Open a C file first.');
     return;
@@ -208,10 +262,30 @@ async function reportToolchain(result, what) {
   return false;
 }
 
+// ml64 reads MASM and nothing else. The extension's Windows route feeds it
+// what cc1 wrote, so cc1 must have written the MASM spelling - a build that
+// went ahead with cc1.masm set to 'gnu' would hand ml64 assembly it cannot
+// parse and report the wreck as an assembler failure.
+function requireMasmSyntax() {
+  if (cc1.cc1CanLink()) return true;
+  if (cc1.config().get('masm', 'masm') !== 'gnu') return true;
+  vscode.window
+    .showErrorMessage(
+      'cc1.masm is set to the GNU spelling, which ml64 cannot read. ' +
+        'Switch it back to masm to build on this machine.',
+      'Use masm'
+    )
+    .then((pick) => {
+      if (pick === 'Use masm') cc1.config().update('masm', 'masm', configTarget());
+    });
+  return false;
+}
+
 async function commandBuildObject() {
-  const doc = activeC();
+  const doc = subjectC();
   if (!doc) return;
   if (!(await requireNative())) return;
+  if (!requireMasmSyntax()) return;
   if (doc.isDirty) await doc.save();
   const stem = path.basename(doc.uri.fsPath, path.extname(doc.uri.fsPath));
   const dir = path.dirname(doc.uri.fsPath);
@@ -240,24 +314,28 @@ async function commandBuildObject() {
 }
 
 async function commandBuildExecutable() {
-  const doc = activeC();
+  const doc = subjectC();
   if (!doc) return null;
   if (!(await requireNative())) return null;
-  if (doc.isDirty) await doc.save();
-  const program = programPath(doc);
+  if (!requireMasmSyntax()) return null;
   const sources = await sourcesFor(doc);
+  await saveSources(sources.concat([doc.uri.fsPath]));
+  const program = programPath(doc);
 
   if (!cc1.cc1CanLink()) {
     // Windows: one cc1 -S per translation unit, then ml64 over each and link
     // over all of them - the sequence help/command-lines.md sets out by hand.
+    // Each unit's .asm and .obj land beside their own source: naming them all
+    // after their stems in one directory silently merged src/a/util.c and
+    // src/b/util.c into a single util.obj.
     const dir = path.dirname(doc.uri.fsPath);
     const units = [];
     for (const source of sources) {
       const stem = path.basename(source, path.extname(source));
-      const asm = path.join(dir, stem + '.asm');
+      const asm = path.join(path.dirname(source), stem + '.asm');
       const args = [source].concat(cc1.commonArgs(doc.uri), ['-S', '-o', asm]);
       if (!(await build(doc, args, 'compiling ' + path.basename(source)))) return null;
-      units.push({ asm, obj: path.join(dir, stem + '.obj') });
+      units.push({ asm, obj: path.join(path.dirname(source), stem + '.obj') });
     }
     const result = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Window, title: 'cc1: ml64 and link' },
@@ -273,7 +351,15 @@ async function commandBuildExecutable() {
 }
 
 // The program is run in a terminal rather than captured, so that a program
-// which reads stdin behaves like one.
+// which reads stdin behaves like one. The exit code is echoed after it, since
+// a terminal otherwise swallows it and a program that only computes a status
+// looks the same succeeding and failing.
+//
+// Two honest limitations. The command line is written for the default shells
+// (POSIX sh-family, PowerShell on Windows) - a cmd.exe terminal profile will
+// not read it. And if the previous program is still running in the reused
+// terminal, the new command line lands on that program's stdin; there is no
+// API that says whether a terminal is busy.
 async function commandRun() {
   const program = await commandBuildExecutable();
   if (!program) return;
@@ -281,8 +367,15 @@ async function commandRun() {
     vscode.window.terminals.find((t) => t.name === 'cc1') ||
     vscode.window.createTerminal({ name: 'cc1', cwd: path.dirname(program) });
   term.show(true);
-  const quoted = '"' + program + '"';
-  term.sendText(process.platform === 'win32' ? '& ' + quoted : quoted);
+  let line;
+  if (process.platform === 'win32') {
+    // PowerShell: single quotes are literal, an embedded one is doubled.
+    line = '& \'' + program.replace(/'/g, "''") + '\'; echo "exit $LASTEXITCODE"';
+  } else {
+    // POSIX: single quotes are literal, an embedded one is spelled '\''.
+    line = "'" + program.replace(/'/g, "'\\''") + "'; echo \"exit $?\"";
+  }
+  term.sendText(line);
 }
 
 async function commandSelectArch() {
@@ -300,7 +393,7 @@ async function commandSelectArch() {
   );
   const pick = await vscode.window.showQuickPick(items, { title: 'cc1: target architecture' });
   if (!pick) return;
-  await cc1.config().update('arch', pick.label, vscode.ConfigurationTarget.Workspace);
+  await cc1.config().update('arch', pick.label, configTarget());
 }
 
 async function commandSelectMasm() {
@@ -312,11 +405,11 @@ async function commandSelectMasm() {
     { title: 'cc1: assembly syntax for x86_64-windows' }
   );
   if (!pick) return;
-  await cc1.config().update('masm', pick.label, vscode.ConfigurationTarget.Workspace);
+  await cc1.config().update('masm', pick.label, configTarget());
 }
 
 async function commandShowTiming() {
-  const doc = activeC();
+  const doc = subjectC();
   if (!doc) return;
   const exe = compilerFor(doc);
   if (!exe) return;
@@ -339,7 +432,7 @@ async function commandLocateCompiler() {
     openLabel: 'Use this cc1',
   });
   if (!picked || !picked.length) return;
-  await cc1.config().update('path', picked[0].fsPath, vscode.ConfigurationTarget.Workspace);
+  await cc1.config().update('path', picked[0].fsPath, configTarget());
   cc1.forgetCompiler();
   updateStatus();
   vscode.window.showInformationMessage('cc1: using ' + picked[0].fsPath);
@@ -355,9 +448,13 @@ function updateStatus() {
   // Naming the binary is not decoration. Two cc1s on one machine answer
   // differently and neither says so; the tooltip is where that gets settled,
   // and it shows the link's target as well as the path taken.
-  const doc = activeC();
-  const exe = cc1.findCompiler(doc ? doc.uri : undefined);
-  let provenance = '_cc1 not found - set `cc1.path`._';
+  //
+  // Only the compiler already resolved is named - the tooltip never goes
+  // looking. The search probes each candidate with a synchronous spawn, and
+  // paying that on every editor switch froze the window; the first check or
+  // build resolves the compiler and refreshes this.
+  const exe = cc1.resolvedCompiler();
+  let provenance = '_cc1 not resolved yet - it is found by the first check or build, or named by `cc1.path`._';
   if (exe) {
     const real = cc1.realPathOf(exe);
     provenance = '**compiler:** `' + exe + '`';
@@ -389,10 +486,12 @@ function updateStatus() {
 // ------------------------------------------------------------- task provider
 
 // Contributing tasks rather than asking for a tasks.json means the build
-// keystroke works in any directory holding a cc1 and a .c file.
+// keystroke works in any directory holding a cc1 and a .c file. The subject
+// is the visible C file, not the focused one - the keystroke should still
+// work with focus in the terminal or the assembly pane.
 const taskProvider = {
   provideTasks() {
-    const doc = activeC();
+    const doc = subjectC();
     if (!doc) return [];
     // A task is a single cc1 command line, so on Windows only the assembly one
     // is truthful - the others need ml64 and link after it, which is two more
@@ -405,32 +504,59 @@ const taskProvider = {
     return modes.map(([mode, title]) => makeTask({ type: 'cc1', mode }, title, doc));
   },
   resolveTask(task) {
-    const doc = activeC();
+    const doc = subjectC();
     if (!doc) return undefined;
     return makeTask(task.definition, task.definition.mode, doc);
   },
 };
 
+// One POSIX shell word. Only the run task builds a command line by hand -
+// everything else hands VS Code the words and lets it do the quoting.
+function shellWord(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
 function makeTask(definition, title, doc) {
+  // A tasks.json may name its own target; the settings answer otherwise.
+  const arch = definition.arch || null;
+  const target = arch && arch !== 'host' ? arch : cc1.effectiveTarget();
   const exe = cc1.findCompiler(doc.uri) || 'cc1';
-  const base = cc1.commonArgs(doc.uri);
+  const base = cc1.commonArgs(doc.uri, arch || undefined);
   const stem = path.basename(doc.uri.fsPath, path.extname(doc.uri.fsPath));
   const dir = path.dirname(doc.uri.fsPath);
-  let args;
+
+  // On a Windows host only the assembly task is a single truthful command.
+  if (!cc1.cc1CanLink() && definition.mode !== 'assembly') return undefined;
+
+  let execution;
   if (definition.mode === 'assembly') {
-    args = [doc.uri.fsPath].concat(base, ['-S', '-o', path.join(dir, stem + cc1.assemblySuffix())]);
+    const args = [doc.uri.fsPath].concat(base, ['-S', '-o', path.join(dir, stem + cc1.suffixFor(target))]);
+    execution = new vscode.ShellExecution(exe, args, { cwd: cwdFor(doc) });
   } else if (definition.mode === 'object') {
-    args = [doc.uri.fsPath].concat(base, ['-c', '-o', path.join(dir, stem + '.o')]);
+    const args = [doc.uri.fsPath].concat(base, ['-c', '-o', path.join(dir, stem + '.o')]);
+    execution = new vscode.ShellExecution(exe, args, { cwd: cwdFor(doc) });
   } else {
-    args = [doc.uri.fsPath].concat(base, ['-o', path.join(dir, stem)]);
+    const program = path.join(dir, stem);
+    const args = [doc.uri.fsPath].concat(base, ['-o', program]);
+    if (definition.mode === 'run') {
+      // Build and then actually run - the task called "build and run" used
+      // to produce the same command as "executable" and never ran anything.
+      // This branch is POSIX-only (see the cc1CanLink gate above), so the
+      // quoting can be too.
+      const line = [exe].concat(args).map(shellWord).join(' ') + ' && ' + shellWord(program);
+      execution = new vscode.ShellExecution(line, { cwd: cwdFor(doc) });
+    } else {
+      execution = new vscode.ShellExecution(exe, args, { cwd: cwdFor(doc) });
+    }
   }
+
   const task = new vscode.Task(
     definition,
     vscode.TaskScope.Workspace,
     'cc1: ' + title,
     'cc1',
-    new vscode.ShellExecution(exe, args, { cwd: cwdFor(doc) }),
-    '$cc1'
+    execution,
+    ['$cc1', '$cc1-include']
   );
   task.group =
     definition.mode === 'run' ? vscode.TaskGroup.Test : vscode.TaskGroup.Build;
@@ -472,7 +598,7 @@ function activate(context) {
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, assembly),
     vscode.tasks.registerTaskProvider('cc1', taskProvider),
     vscode.commands.registerCommand('cc1.checkNow', () => {
-      const doc = activeC();
+      const doc = subjectC();
       if (doc) check(doc);
     }),
     vscode.commands.registerCommand('cc1.showAssembly', commandShowAssembly),
@@ -489,11 +615,11 @@ function activate(context) {
       if (cc1.config().get('diagnostics', 'save') !== 'off') check(doc);
       if (cc1.config().get('assemblyRefresh', true)) assembly.refreshFor(doc.uri.fsPath);
     }),
-    vscode.workspace.onDidChangeTextDocument((e) => {
-      if (isC(e.document)) scheduleCheck(e.document);
-    }),
     vscode.workspace.onDidCloseTextDocument((doc) => {
       if (isC(doc)) diagnostics.delete(doc.uri);
+      // A closed assembly pane must also stop being refreshed, or the map of
+      // open panes only ever grows and every save re-renders ghosts.
+      if (doc.uri.scheme === SCHEME) assembly.forget(doc.uri);
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration('cc1')) return;
@@ -513,11 +639,9 @@ function activate(context) {
 
   // Exposed for the integration test, which drives the same code the editor
   // does rather than a copy of it.
-  return { check, parse: diag.parse, cc1, windows, assembly, diagnostics };
+  return { check, parse: diag.parse, cc1, windows, assembly, diagnostics, makeTask };
 }
 
-function deactivate() {
-  if (pending) clearTimeout(pending);
-}
+function deactivate() {}
 
 module.exports = { activate, deactivate };

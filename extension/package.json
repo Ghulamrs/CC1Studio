@@ -178,6 +178,26 @@
           "severity": 4,
           "message": 5
         }
+      },
+      {
+        "name": "cc1-include",
+        "owner": "cc1",
+        "source": "cc1",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": [
+          {
+            "regexp": "^(.+?):(\\d+):\\s(?!\\d)(?!.*\\b(?:error|warning|note):).*$",
+            "file": 1,
+            "line": 2
+          },
+          {
+            "regexp": "^\\s*\\^\\s+(\\S.*)$",
+            "message": 1
+          }
+        ]
       }
     ],
     "configuration": {
@@ -225,7 +245,8 @@
             "type": "string"
           },
           "default": [],
-          "description": "Directories added to the ones <...> searches, one -I each. ${workspaceFolder} and ~ are expanded."
+          "description": "Directories added to the ones <...> searches, one -I each. ${workspaceFolder} and ~ are expanded.",
+          "scope": "resource"
         },
         "cc1.defines": {
           "type": "array",
@@ -233,7 +254,8 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Macros to define, one `-D` each. `NAME` means `NAME=1`; write `NAME=value` for anything else."
+          "markdownDescription": "Macros to define, one `-D` each. `NAME` means `NAME=1`; write `NAME=value` for anything else.",
+          "scope": "resource"
         },
         "cc1.undefines": {
           "type": "array",
@@ -241,7 +263,8 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Macros to remove, one `-U` each. May name one of the target's own."
+          "markdownDescription": "Macros to remove, one `-U` each. May name one of the target's own.",
+          "scope": "resource"
         },
         "cc1.jobs": {
           "type": "integer",
@@ -255,28 +278,21 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Globs naming every translation unit of the program, for the link and run commands \u2014 `[\"src/**/*.c\"]`. Left empty, only the active file is compiled and linked."
+          "markdownDescription": "Globs naming every translation unit of the program, for the link and run commands \u2014 `[\"src/**/*.c\"]`. Left empty, only the active file is compiled and linked.",
+          "scope": "resource"
         },
         "cc1.diagnostics": {
           "type": "string",
           "default": "save",
           "enum": [
             "save",
-            "type",
             "off"
           ],
           "enumDescriptions": [
             "Check when the file is saved.",
-            "Check as the file is edited, after a pause.",
             "Only check when asked, through cc1: Check This File."
           ],
-          "description": "When cc1 is run to fill the Problems panel."
-        },
-        "cc1.diagnosticsDelay": {
-          "type": "integer",
-          "default": 400,
-          "minimum": 50,
-          "description": "How long editing must pause before a check starts, in milliseconds. Only used when cc1.diagnostics is 'type'."
+          "description": "When cc1 is run to fill the Problems panel. cc1 reads the file on disk, so the check runs when the disk changes - which is what saving is."
         },
         "cc1.assemblyRefresh": {
           "type": "boolean",
@@ -295,7 +311,8 @@
             "type": "string"
           },
           "default": [],
-          "description": "Further arguments appended to every cc1 command line, for flags this extension does not model."
+          "description": "Further arguments appended to every cc1 command line, for flags this extension does not model.",
+          "scope": "resource"
         }
       }
     }

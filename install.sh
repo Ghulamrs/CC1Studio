@@ -132,36 +132,70 @@ fi
 #
 # So the installer writes cc1.path. It is explicit, it survives reinstalling
 # the extension, and it is visible in the Settings UI where it can be changed.
-settings=""
+# A machine can have both answers at once - a desktop VS Code and a
+# Remote-SSH server - and each reads its own settings file, so cc1.path goes
+# to every one that exists here rather than to whichever was found last.
+desktop_settings=""
 case "$(uname -s)" in
-  Darwin) settings="$HOME/Library/Application Support/Code/User/settings.json" ;;
-  Linux)  settings="$HOME/.config/Code/User/settings.json" ;;
+  Darwin) desktop_settings="$HOME/Library/Application Support/Code/User/settings.json" ;;
+  Linux)  desktop_settings="$HOME/.config/Code/User/settings.json" ;;
 esac
-# A Remote-SSH machine has no desktop settings; its equivalent is machine scope.
-[ -d "$HOME/.vscode-server" ] && settings="$HOME/.vscode-server/data/Machine/settings.json"
 
-if [ -n "$settings" ] && command -v python3 >/dev/null 2>&1; then
-  mkdir -p "$(dirname "$settings")"
-  CC1_PATH="$cc1" SETTINGS="$settings" python3 - <<'PY'
-import json, os, re
+write_setting() {
+  # Adds cc1.path to one settings.json, and refuses to touch a file it cannot
+  # parse. The old version fell back to an empty object on a parse failure and
+  # then wrote it out - which replaced a user's whole settings file with two
+  # lines the first time it met an inline comment or a trailing comma, both of
+  # which VS Code itself accepts.
+  mkdir -p "$(dirname "$1")"
+  CC1_PATH="$cc1" SETTINGS="$1" python3 - <<'PY'
+import json, os, re, sys
 p, cc1 = os.environ["SETTINGS"], os.environ["CC1_PATH"]
 try:
     raw = open(p).read()
 except OSError:
-    raw = "{}"
-# settings.json is JSONC; strip line comments so it parses, then rewrite plain.
-try:
-    d = json.loads(re.sub(r'^\s*//.*$', '', raw, flags=re.M) or "{}")
-except ValueError:
+    raw = ""
+d = None
+if not raw.strip():
     d = {}
+else:
+    # settings.json is JSONC; strip whole-line comments and try. Anything the
+    # parse still refuses - inline comments, block comments, trailing commas -
+    # is a file this script must not rewrite, because writing back what it
+    # *did* understand would silently drop the rest.
+    for text in (raw, re.sub(r'^\s*//.*$', '', raw, flags=re.M)):
+        try:
+            d = json.loads(text)
+            break
+        except ValueError:
+            pass
+if not isinstance(d, dict):
+    print("  could not parse " + p + " safely - leaving it alone.")
+    print('  add this line to it yourself:  "cc1.path": ' + json.dumps(cc1))
+    sys.exit(0)
 d["cc1.path"] = cc1
 json.dump(d, open(p, "w"), indent=2)
 open(p, "a").write("\n")
 print("  cc1.path -> " + cc1)
 print("  written to " + p)
 PY
+}
+
+if command -v python3 >/dev/null 2>&1; then
+  wrote=no
+  if [ "$desktop" = yes ] && [ -n "$desktop_settings" ]; then
+    write_setting "$desktop_settings"
+    wrote=yes
+  fi
+  # A Remote-SSH machine has no desktop settings; its equivalent is machine
+  # scope, which is also seeded by --server before the first connection.
+  if [ -d "$HOME/.vscode-server" ] || [ "$force_server" = yes ]; then
+    write_setting "$HOME/.vscode-server/data/Machine/settings.json"
+    wrote=yes
+  fi
+  [ "$wrote" = no ] && echo "  (no settings file to write cc1.path into; set it in Settings)" >&2
 else
-  echo "  (could not write cc1.path automatically; set it in Settings)" >&2
+  echo "  (python3 not found, so cc1.path was not written; set it in Settings)" >&2
 fi
 
 # Through the editor, from a package - never by copying the folder in.

@@ -12,6 +12,12 @@
 # copy rather than the source. Passing --extensionTestsPath without it looks
 # like it should work and does not: the editor starts, the extension host comes
 # up, and the tests are simply never run, with nothing printed to say so.
+#
+# The tests themselves come from the *source* tree: the package deliberately
+# carries no tests or fixtures, so pointing --extensionTestsPath into the
+# installed copy asked for files that are not there and always exited 1. The
+# split is sound - the code under test is the installed copy, and the checks
+# driving it may live anywhere.
 # Discovery of the installed extension is worth checking separately, and
 # cheaply:
 #
@@ -102,8 +108,8 @@ CC1_UNDER_TEST=$cc1 \
   --skip-welcome \
   --no-sandbox \
   --extensionDevelopmentPath="$installed" \
-  --extensionTestsPath="$installed/test/index.js" \
-  "$installed/test/fixtures"
+  --extensionTestsPath="$here/index.js" \
+  "$here/fixtures"
 status=$?
 
 rm -rf "$profile"

@@ -59,10 +59,13 @@ if ($usage -notmatch '-S') {
 
 $slot = Join-Path $studio "cc"
 New-Item -ItemType Directory -Force -Path $slot | Out-Null
-# ASCII with no BOM: the extension reads this with a plain trim, and a BOM
-# would ride along into the path and make it unopenable.
-[System.IO.File]::WriteAllText((Join-Path $slot "cc1.path"), $Cc1, [System.Text.Encoding]::ASCII)
-[System.IO.File]::WriteAllText((Join-Path $studio "extension\slot.txt"), $slot, [System.Text.Encoding]::ASCII)
+# UTF-8 with no BOM: the extension reads these with a plain trim, so a BOM
+# would ride along into the path - and ASCII would silently turn any
+# character outside it into '?', which a profile named in another script
+# would meet on its first path.
+$noBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText((Join-Path $slot "cc1.path"), $Cc1, $noBom)
+[System.IO.File]::WriteAllText((Join-Path $studio "extension\slot.txt"), $slot, $noBom)
 
 Write-Host "cc\  -> $Cc1"
 
@@ -87,7 +90,7 @@ while ($probe -and -not $sourceDir) {
 
 New-Item -ItemType Directory -Force -Path (Join-Path $studio "source") | Out-Null
 if ($sourceDir) {
-    [System.IO.File]::WriteAllText((Join-Path $studio "source\source.path"), $sourceDir, [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllText((Join-Path $studio "source\source.path"), $sourceDir, $noBom)
     Write-Host "source\ -> $sourceDir"
 } else {
     Write-Warning "No Compiler-C checkout found above $Cc1 - write its path into $studio\source\source.path by hand."
@@ -103,18 +106,40 @@ if ($sourceDir) {
 # the extension and is visible in the Settings UI.
 $userSettings = "$env:APPDATA\Code\User\settings.json"
 New-Item -ItemType Directory -Force -Path (Split-Path $userSettings) | Out-Null
-$conf = @{}
+
+# A settings file this cannot parse is a settings file this must not rewrite:
+# the parse only recovers what it understood, so writing that back silently
+# drops everything else. The old version did exactly that - and on Windows
+# PowerShell 5.1 it did it every time, because ConvertFrom-Json has no
+# -AsHashtable there and the resulting error was caught and turned into an
+# empty object. This uses only what 5.1 has, and walks away rather than
+# guessing.
+$conf = $null
+$rawText = ""
 if (Test-Path $userSettings) {
-    $raw = Get-Content $userSettings -Raw
-    # settings.json is JSONC; drop line comments so it parses.
-    $raw = ($raw -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
-    try { $conf = $raw | ConvertFrom-Json -AsHashtable } catch { $conf = @{} }
+    $rawText = Get-Content $userSettings -Raw
+    if ($rawText -and $rawText.Trim()) {
+        # settings.json is JSONC; drop whole-line comments and try.
+        $stripped = ($rawText -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+        foreach ($candidate in @($rawText, $stripped)) {
+            try { $conf = $candidate | ConvertFrom-Json; break } catch { $conf = $null }
+        }
+    } else {
+        $conf = New-Object PSObject
+    }
+} else {
+    $conf = New-Object PSObject
 }
-if (-not $conf) { $conf = @{} }
-$conf["cc1.path"] = $Cc1
-[System.IO.File]::WriteAllText($userSettings, ($conf | ConvertTo-Json -Depth 10), [System.Text.Encoding]::UTF8)
-Write-Host "  cc1.path -> $Cc1"
-Write-Host "  written to $userSettings"
+
+if ($null -eq $conf) {
+    Write-Warning "Could not parse $userSettings safely - leaving it alone."
+    Write-Warning "Add this line to it yourself:  `"cc1.path`": `"$($Cc1 -replace '\\', '\\')`""
+} else {
+    $conf | Add-Member -NotePropertyName "cc1.path" -NotePropertyValue $Cc1 -Force
+    [System.IO.File]::WriteAllText($userSettings, ($conf | ConvertTo-Json -Depth 10), $noBom)
+    Write-Host "  cc1.path -> $Cc1"
+    Write-Host "  written to $userSettings"
+}
 
 # Through the editor, from the package - never by copying the folder in.
 #

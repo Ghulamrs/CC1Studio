@@ -143,13 +143,24 @@ cpptools — has been removed.
 ## Settings
 
 All under `cc1.` — `path`, `arch`, `masm`, `includePaths`, `defines`,
-`undefines`, `jobs`, `sources`, `diagnostics`, `diagnosticsDelay`,
-`assemblyRefresh`, `extraArgs`. `${workspaceFolder}` and `~` are expanded in
-paths.
+`undefines`, `jobs`, `sources`, `diagnostics`, `assemblyRefresh`, `vcvars`,
+`extraArgs`. `${workspaceFolder}` and `~` are expanded in paths.
 
 `cc1.sources` is the one worth knowing about: set it to the globs naming every
 translation unit (`["src/**/*.c"]`) and the link and run commands build the
-whole program. Left empty, they build the file in front of you.
+whole program. Left empty, they build the file in front of you. Every dirty
+file among them is saved before the build — cc1 reads disk, so building
+without saving would quietly compile stale text.
+
+`cc1.diagnostics` knows `save` and `off` and nothing in between, on purpose.
+cc1 reads the file on disk, so the honest moment to re-check is when the disk
+changes. An as-you-type mode existed briefly and was removed: it compiled the
+last saved text and drew the result on the edited buffer, which put squiggles
+on lines cc1 had never seen.
+
+**Build artifacts land beside their sources.** The object and executable
+commands write `foo.o` (or `foo.asm` and `foo.obj` on Windows) and the program
+next to `foo.c`, and will overwrite files of those names without asking.
 
 ## What cc1 refuses, and why that is not this extension's doing
 
@@ -179,8 +190,12 @@ The status bar says which of the three situations you are in, because "native"
 would be true and useless on Windows.
 
 **cc1 stops at the first error.** There is at most one diagnostic per file per
-run, which is why a check clears every file it previously reported on before
-setting the new one.
+run, which is why each check clears what *its own* source reported last time
+before setting the new result — a fixed error in a header has to vanish — and
+never what a different source reported, or checking one file would wipe
+another's squiggles. Checks are serialized for the same reason: Save All fires
+one check per file, and two running at once used to lose one file's result to
+the other's.
 
 ## Testing
 
@@ -189,11 +204,22 @@ setting the new one.
 ./extension/test/run-installed.sh   # the files install.sh actually put in place
 ```
 
-Twenty-one checks, run inside a real VS Code against the real compiler — the
+```powershell
+.\extension\test\run.ps1            # the same checks, on the Windows machine
+```
+
+Twenty-six checks, run inside a real VS Code against the real compiler — the
 parser against known cc1 output, and the rest against cc1 itself: diagnostics
 landing on the right line and column, an error in a header landing in the
-header, a missing include, settings reaching the command line, two targets
-producing different assembly, and a linked program printing what it should.
+header (in a subdirectory too), a missing include, two broken files keeping
+their squiggles at once, settings reaching the command line, two targets
+producing different assembly, the task provider's command lines, and a linked
+program printing what it should.
+
+`run-installed.sh` loads the *installed* extension while taking the checks and
+fixtures from this source tree — the package deliberately carries neither, so
+pointing the test path into the installed copy asked for files that are not
+there and always exited 1.
 
 There is **no framework and no `npm install`**, on purpose. VS Code ships its
 own node, and neither the Mac this was written on nor the 419 MB EC2 box has
@@ -274,7 +300,7 @@ CC1Studio/
     lib/assembly.js          the virtual document behind the assembly pane
     lib/windows.js           ml64 and link, which finish what cc1 starts on Windows
     syntaxes/                a GAS and MASM grammar
-    test/                    the twenty-one checks, and the two runners
+    test/                    the twenty-six checks, and the three runners
 ```
 
 Two pointers and no copies, which is the whole shape of it. The compiler has

@@ -82,6 +82,12 @@ function quote(s) {
 function script(vcvars, steps) {
   return [
     '@echo off',
+    // The file is written as UTF-8, and cmd parses a batch in the console
+    // codepage - so the codepage is switched first, before any line holding a
+    // path is read. Without this, a path with a character outside ASCII (a
+    // user profile named in Urdu, say) is misread and the tools are handed a
+    // file that does not exist.
+    'chcp 65001 >nul',
     'call ' + quote(vcvars) + ' >nul',
     'if errorlevel 1 (echo cc1-studio: vcvars64.bat failed & exit /b 1)',
   ].concat(steps).join('\r\n') + '\r\n';
@@ -89,7 +95,9 @@ function script(vcvars, steps) {
 
 async function runScript(body, cwd, output) {
   const file = cc1.scratchFile('.bat');
-  fs.writeFileSync(file, body, 'ascii');
+  // utf8, not ascii: node's 'ascii' masks every byte to seven bits, which
+  // silently corrupts any non-ASCII path instead of failing.
+  fs.writeFileSync(file, body, 'utf8');
   output.appendLine('--- ml64/link batch ---');
   output.appendLine(body.trim());
   const result = await cc1.run('cmd.exe', ['/c', file], cwd);

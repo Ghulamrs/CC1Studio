@@ -96,15 +96,19 @@ function parse(text) {
         severity: hasColumn ? m[4] : m[3],
         message: hasColumn ? m[5] : m[4],
       });
-      // Swallow the echoed source line and its caret, however many lines cc1
-      // chose to spend on them, but never run past another diagnostic.
-      let j = i + 1;
-      while (j < lines.length && !positionOf(lines[j])) {
-        const consumed = lines[j];
-        j += 1;
-        if (CARET.test(consumed)) break;
+      // Swallow the echoed source line and its caret - but only when the
+      // caret actually appears. cc1 spends exactly two lines on the echo, so
+      // the caret is looked for within two lines of the diagnostic; when it
+      // is not there (a driver message following the diagnostic instead),
+      // nothing is consumed, and what follows becomes notices rather than
+      // being silently eaten while hunting for a caret that never comes.
+      for (let j = i + 1; j <= i + 2 && j < lines.length; j += 1) {
+        if (positionOf(lines[j])) break;
+        if (CARET.test(lines[j])) {
+          i = j;
+          break;
+        }
       }
-      i = j - 1;
       continue;
     }
     notices.push(line.trim());

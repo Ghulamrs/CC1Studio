@@ -108,6 +108,20 @@ async function run() {
     assert.strictEqual(entries[1].message, 'second');
   });
 
+  await check('driver lines after a caret-less diagnostic stay notices', () => {
+    // The echo-and-caret swallow used to keep eating lines while hunting for
+    // a caret that never came, so a driver message following a diagnostic
+    // vanished without appearing anywhere.
+    const { entries, notices } = api.parse(
+      'a.c:1:2: error: broken thing\n' +
+      'cc1: the linker failed - the command was:\n' +
+      '  cc a.s -o prog -lm\n'
+    );
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(notices.length, 2, 'the driver lines were swallowed');
+    assert.ok(/linker failed/.test(notices[0]), 'the first notice was: ' + notices[0]);
+  });
+
   // ---- diagnostics, against the real compiler ------------------------------
 
   await check('a good file leaves the Problems panel empty', async () => {
@@ -173,15 +187,57 @@ async function run() {
   });
 
   await check('fixing the error clears it again', async () => {
-    const doc = await open('bad.c');
+    // A transient file, broken and then repaired in place - the way an error
+    // is actually fixed. The old version of this check "fixed" bad.c by
+    // checking a different file, which only passed because every check wiped
+    // the whole collection - the same wipe that lost squiggles on Save All.
+    const transient = path.join(fixtures, 'transient.c');
+    fs.writeFileSync(transient, 'int main(void) {\n    int x = ;\n    return x;\n}\n');
+    try {
+      const doc = await open('transient.c');
+      await api.check(doc);
+      await settle(150);
+      assert.strictEqual(diagnosticsFor('transient.c').length, 1,
+        'setup: expected the error first');
+      fs.writeFileSync(transient, 'int main(void) {\n    int x = 0;\n    return x;\n}\n');
+      await api.check(doc);
+      await settle(150);
+      assert.strictEqual(diagnosticsFor('transient.c').length, 0,
+        'a stale diagnostic survived a clean check');
+    } finally {
+      try { fs.unlinkSync(transient); } catch (e) { /* fine */ }
+    }
+  });
+
+  await check('two broken files each keep their own squiggle', async () => {
+    // Save All fires one check per file. Unserialized, the two raced and the
+    // later clear wiped the earlier file's result, so only one of two broken
+    // files showed an error.
+    const one = await open('bad.c');
+    const two = await open('bad2.c');
+    await Promise.all([api.check(one), api.check(two)]);
+    await settle(200);
+    assert.strictEqual(diagnosticsFor('bad.c').length, 1,
+      'bad.c lost its diagnostic to bad2.c\'s check');
+    assert.strictEqual(diagnosticsFor('bad2.c').length, 1,
+      'bad2.c lost its diagnostic to bad.c\'s check');
+  });
+
+  await check('an error in a subdirectory header lands in that header', async () => {
+    // The extension always hands cc1 an absolute source path, and cc1 then
+    // reports header errors absolutely in both of its shapes - this pins
+    // that, since a relative report resolved against the wrong base would
+    // squiggle a file that does not exist.
+    const doc = await open(path.join('sub', 'inner.c'));
     await api.check(doc);
-    await settle(150);
-    assert.ok(diagnosticsFor('bad.c').length === 1, 'setup: expected the error first');
-    const good = await open('good.c');
-    await api.check(good);
-    await settle(150);
-    assert.strictEqual(diagnosticsFor('bad.c').length, 0,
-      'a stale diagnostic survived a clean check');
+    await settle(200);
+    assert.strictEqual(diagnosticsFor(path.join('sub', 'inner.c')).length, 0,
+      'the .c file was blamed for its header');
+    const inHeader = vscode.languages.getDiagnostics(
+      vscode.Uri.file(path.join(fixtures, 'sub', 'local.h'))
+    );
+    assert.strictEqual(inHeader.length, 1, 'the header carried no diagnostic');
+    assert.strictEqual(inHeader[0].range.start.line, 0);
   });
 
   // ---- the assembly pane ---------------------------------------------------
@@ -284,6 +340,12 @@ async function run() {
       console.log('       (skipped: this machine is not one of cc1\'s three targets)');
       return;
     }
+    if (!api.cc1.cc1CanLink()) {
+      // A Windows host: cc1 stops at -S there, and the ml64/link route needs
+      // vcvars64.bat, which this scratch profile has no business running.
+      console.log('       (skipped: cc1 cannot link on this host; ml64 and link do that)');
+      return;
+    }
     const program = path.join(os.tmpdir(), 'cc1-studio-test-program');
     try { fs.unlinkSync(program); } catch (e) { /* fine */ }
     const result = await api.cc1.run(
@@ -327,6 +389,16 @@ async function run() {
     // that proves an untouched install works, which is how it will actually be
     // used. The fixture directory has no cc1 above it, so a hit here can only
     // have come from cc/cc1.path.
+    //
+    // An *installed* copy carries no slot pointer at all, on purpose - the
+    // .vsix is machine-neutral and cc1.path is the installed answer - so
+    // when this runs under run-installed.sh there is nothing to test.
+    const hasSlot = fs.existsSync(path.join(ext.extensionPath, 'slot.txt')) ||
+      fs.existsSync(path.join(ext.extensionPath, '..', 'cc', 'cc1.path'));
+    if (!hasSlot) {
+      console.log('       (skipped: the installed copy carries no slot pointer, by design)');
+      return;
+    }
     await config.update('path', '', vscode.ConfigurationTarget.Workspace);
     api.cc1.forgetCompiler();
     await settle(80);
@@ -336,6 +408,37 @@ async function run() {
       'the slot pointed at a different cc1: ' + found);
     await config.update('path', cc1Path, vscode.ConfigurationTarget.Workspace);
     api.cc1.forgetCompiler();
+  });
+
+  // ---- the task provider ---------------------------------------------------
+
+  await check('the build-and-run task actually runs the program', async () => {
+    const doc = await open('good.c');
+    const task = api.makeTask({ type: 'cc1', mode: 'run' }, 'build and run', doc);
+    if (!api.cc1.cc1CanLink()) {
+      // On a Windows host a run task cannot be one truthful command line, so
+      // it must refuse to resolve rather than quietly build and not run.
+      assert.strictEqual(task, undefined, 'an untruthful run task was produced');
+      return;
+    }
+    assert.ok(task, 'no run task was produced');
+    const line = task.execution.commandLine;
+    assert.ok(line && line.includes(' && '),
+      'the run task does not run after building: ' + line);
+    // The program comes after the build, so the command ends with it.
+    assert.ok(/good'?$/.test(line.trim()), 'the program is not what runs last: ' + line);
+  });
+
+  await check('a task definition naming its own target is honoured', async () => {
+    const doc = await open('good.c');
+    const task = api.makeTask({ type: 'cc1', mode: 'assembly', arch: 'x86_64-linux' },
+      'assembly', doc);
+    assert.ok(task, 'no assembly task was produced');
+    assert.ok(task.execution.args.includes('-arch=x86_64-linux'),
+      'the arch in the definition never reached the command line: ' +
+        task.execution.args.join(' '));
+    const out = task.execution.args[task.execution.args.length - 1];
+    assert.ok(out.endsWith('.s'), 'a linux target was named with the MASM suffix: ' + out);
   });
 
   await check('commands are all registered', async () => {

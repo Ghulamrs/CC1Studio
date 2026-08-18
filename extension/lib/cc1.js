@@ -26,8 +26,13 @@ function hostTarget() {
   return null;
 }
 
-function config() {
-  return vscode.workspace.getConfiguration('cc1');
+// Pass the document's uri where one is to hand: in a multi-root workspace the
+// folder-level values of resource-scoped settings only apply when the
+// configuration is read against a resource. Read without a scope, the
+// window-level answer comes back - which is still the right answer for the
+// status bar and the target picker, since they speak for the window.
+function config(scope) {
+  return vscode.workspace.getConfiguration('cc1', scope || null);
 }
 
 // The target actually in force, with 'host' resolved. Null when the setting
@@ -153,7 +158,15 @@ function isUsable(p) {
   let ok = false;
   try {
     // cc1 given no input prints its usage and exits; that text is the answer.
-    const r = cp.spawnSync(p, [], { timeout: 5000, encoding: 'utf8' });
+    // stdin is closed up front: a binary that answers to the name cc1 but
+    // reads standard input (gcc's own internal cc1 does) would otherwise sit
+    // on the timeout instead of failing at once.
+    const r = cp.spawnSync(p, [], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
     const usage = String(r.stdout || '') + String(r.stderr || '');
     ok = /(^|\s)-S(\s|,)/.test(usage) && /<file\.c>/.test(usage);
   } catch (e) {
@@ -220,17 +233,20 @@ function findCompiler(uri) {
 }
 
 // The flags every invocation carries, whatever it is being asked to produce.
-function commonArgs(uri) {
-  const c = config();
+// archOverride lets a task definition name its own target; everything else
+// still comes from the settings.
+function commonArgs(uri, archOverride) {
+  const c = config(uri);
   const folder = folderFor(uri);
   const args = [];
 
-  const arch = c.get('arch', 'host');
+  const arch = archOverride || c.get('arch', 'host');
   if (arch !== 'host') args.push('-arch=' + arch);
 
   // -masm only means anything for the Windows target, and 'masm' is already
   // cc1's default, so the flag is written only when it changes something.
-  if (effectiveTarget() === 'x86_64-windows' && c.get('masm', 'masm') === 'gnu') {
+  const target = arch === 'host' ? hostTarget() : arch;
+  if (target === 'x86_64-windows' && c.get('masm', 'masm') === 'gnu') {
     args.push('-masm=gnu');
   }
 
@@ -245,23 +261,46 @@ function commonArgs(uri) {
   return args;
 }
 
-function run(exe, args, cwd) {
+// token, when given, is a vscode.CancellationToken: cancelling kills the
+// child rather than leaving it to run to completion behind a spinner that
+// nothing can dismiss. stdin is closed so a tool that reads it fails fast
+// instead of waiting forever on input nobody can type.
+function run(exe, args, cwd, token) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = cp.spawn(exe, args, { cwd });
+      child = cp.spawn(exe, args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
     } catch (e) {
       resolve({ code: -1, stdout: '', stderr: String(e && e.message), spawnFailed: true });
       return;
     }
+    let listener;
+    if (token) {
+      listener = token.onCancellationRequested(() => {
+        try { child.kill(); } catch (e) { /* already gone */ }
+      });
+    }
+    const done = (result) => {
+      if (listener) listener.dispose();
+      resolve(result);
+    };
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('error', (e) => {
-      resolve({ code: -1, stdout, stderr: String(e && e.message), spawnFailed: true });
+      done({ code: -1, stdout, stderr: String(e && e.message), spawnFailed: true });
     });
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('close', (code) => done({
+      code,
+      stdout,
+      stderr,
+      cancelled: !!(token && token.isCancellationRequested),
+    }));
   });
 }
 
@@ -285,8 +324,22 @@ function discard(file) {
 // is .asm by convention and everything else is .s; this only decides what the
 // assembly pane is called, and through that how it is coloured.
 function assemblySuffix() {
-  const windows = effectiveTarget() === 'x86_64-windows';
+  return suffixFor(effectiveTarget());
+}
+
+function suffixFor(target) {
+  const windows = target === 'x86_64-windows';
   return windows && config().get('masm', 'masm') === 'masm' ? '.asm' : '.s';
+}
+
+// The compiler already resolved, without going looking. findCompiler probes
+// candidates with a synchronous spawn, which is the right price for a build
+// and the wrong one for a status bar repaint on every editor switch - this
+// answers from what is already known and never blocks.
+function resolvedCompiler() {
+  const configured = expand(config().get('path', ''), folderFor(undefined));
+  if (configured) return isRunnable(configured) ? configured : null;
+  return cached;
 }
 
 // Which cc1 actually answered. The slot is a symlink, so the path the editor
@@ -321,4 +374,6 @@ module.exports = {
   scratchFile,
   discard,
   assemblySuffix,
+  suffixFor,
+  resolvedCompiler,
 };

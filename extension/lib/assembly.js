@@ -52,6 +52,12 @@ class AssemblyProvider {
     for (const key of this.sources.keys()) this.emitter.fire(vscode.Uri.parse(key));
   }
 
+  // Called when a pane's document is closed, so the map holds only open panes
+  // rather than every pane there has ever been.
+  forget(uri) {
+    this.sources.delete(uri.toString());
+  }
+
   async provideTextDocumentContent(uri) {
     const source = this.sources.get(uri.toString()) || decodeURIComponent(uri.query);
     const comment = cc1.assemblySuffix() === '.asm' ? '; ' : '# ';
